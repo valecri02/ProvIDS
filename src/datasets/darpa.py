@@ -112,7 +112,7 @@ class DARPADataset_Temporal(InMemoryDataset):
 
 
         ext_roll = torch.from_numpy(df.ext_roll.values)
-        hash_id = torch.from_numpy(df.hash_id.values)
+        hash_id = torch.from_numpy(df.hash_id.values.astype("int64"))
         malicious = torch.from_numpy(df.malicious.values)
         
 
