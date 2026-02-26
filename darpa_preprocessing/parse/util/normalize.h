@@ -19,7 +19,7 @@
 #if defined(__APPLE__)
 	#include <json/json.h>
 #else
-	#include <jsoncpp/json/json.h>
+	#include <json/json.h>
 #endif
 
 std::string Jval2str(const Json::Value jval);
