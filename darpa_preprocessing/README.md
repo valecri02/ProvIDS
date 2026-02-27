@@ -67,6 +67,8 @@ export LD_LIBRARY_PATH=$LIB_INSTALL_PATH/lib:$LIB_INSTALL_PATH/lib64:$LD_LIBRARY
 Make Sure you have successfully compiled driverdar (for DARPA) under `Shadewatcher/parse`.
 
 ```
+. /work3/s253892/ProvIDS/darpa_preprocessing/load_provids_env.sh
+
 make clean
 make
 ```
