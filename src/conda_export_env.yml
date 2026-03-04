@@ -1,6 +1,7 @@
-name: ctdg_pyg
+name: ctdg
 channels:
   - conda-forge
+  - defaults
 dependencies:
   - _libgcc_mutex=0.1=main
   - _openmp_mutex=5.1=1_gnu
@@ -56,7 +57,7 @@ dependencies:
       - platformdirs==3.5.0
       - protobuf==4.22.3
       - psutil==5.9.5
-      - pyg-lib==0.4.0+pt113cu117
+      - pyg-lib==0.2.0+pt113cu117
       - pyparsing==3.0.9
       - pyrsistent==0.19.3
       - python-dateutil==2.8.2
@@ -72,7 +73,7 @@ dependencies:
       - torch==1.13.1+cu117
       - torch-cluster==1.6.1+pt113cu117
       - torch-geometric==2.3.1
-      - torch-scatter==2.1.2+pt113cu117
+      - torch-scatter==2.1.1+pt113cu117
       - torch-sparse==0.6.17+pt113cu117
       - torch-spline-conv==1.2.2+pt113cu117
       - tqdm==4.65.0

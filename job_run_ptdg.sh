@@ -18,7 +18,7 @@ module purge
 
 # Conda setup
 source ~/miniforge3/bin/activate
-conda activate ctdg_pyg
+conda activate ctdg
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LD_PRELOAD="$CONDA_PREFIX/lib/libstdc++.so.6${LD_PRELOAD:+:$LD_PRELOAD}"
 export NUM_CPUS=4
@@ -28,9 +28,9 @@ export NUM_GPUS=1
 cd "$HOME/other_repos/ProvCTDG"
 echo "Repo CWD: $(pwd)"
 
-DATA_DIR="$HOME/other_repos/ProvCTDG/data/DATA"
+DATA_DIR="/work3/s253892/ProvIDS/DATA/DATA"
 DATA_NAME="darpa_theia_0to25"
-SAVE_DIR="$HOME/other_repos/ProvCTDG/experiments/tgn_mem_theia_1run"
+SAVE_DIR="/work3/s253892/ProvIDS/experiments/tgn_mem_theia_5runs"
 MODEL="TGN"
 
 python -c "import torch, pandas, numpy, scipy, sklearn; import torch_geometric; print('imports ok')"
@@ -41,7 +41,7 @@ python -u main.py \
   --data_name ${DATA_NAME} \
   --model ${MODEL} \
   --version temporal \
-  --parallelism 1 \
+  --parallelism 4 \
   --epochs 50 \
   --batch 200 \
   --save_dir ${SAVE_DIR} \
