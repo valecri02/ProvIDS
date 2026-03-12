@@ -3,7 +3,7 @@ import torch
 from torch_geometric.datasets import JODIEDataset
 from numpy.random import default_rng
 import numpy
-from .darpa import DARPADataset_Temporal, DARPADataset_HeteroStatic, DARPADataset_TransR, DARPADataset_Static
+from .darpa import DARPADataset_Temporal, DARPADataset_Static
 
 
 JODIE = ['Wikipedia', "Reddit", "MOOC", "LastFM"]
@@ -25,13 +25,9 @@ def get_dataset(root, name, version, seed, metadata=False):
             data = dataset[0]
             data_metadata = data.metadata
             del data.metadata
-        elif version == 'heterostatic':
-            data = DARPADataset_HeteroStatic(root, name)
         elif version == 'static':
             dataset = DARPADataset_Static(root, name)
             data = dataset
-        elif version == 'transR':
-            data = [DARPADataset_TransR(root, name, mode) for mode in ['train', 'val', 'test']]
         else:
             raise NotImplementedError
     else:
