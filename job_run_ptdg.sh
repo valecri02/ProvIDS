@@ -14,7 +14,6 @@
 set -euo pipefail
 
 module purge
-# module load python3/3.12.9
 
 # Conda setup
 source ~/miniforge3/bin/activate
@@ -25,12 +24,12 @@ export NUM_CPUS=4
 export NUM_GPUS=1
 
 # Repo root
-cd "$HOME/other_repos/ProvCTDG"
+cd "/work3/s253892/ProvCTDG"
 echo "Repo CWD: $(pwd)"
 
 DATA_DIR="/work3/s253892/ProvIDS/DATA/DATA"
 DATA_NAME="darpa_theia_0to25"
-SAVE_DIR="/work3/s253892/ProvIDS/experiments/tgn_mem_theia_5runs"
+SAVE_DIR="/work3/s253892/ProvIDS/experiments/tgn_theia_12layers"
 MODEL="TGN"
 
 python -c "import torch, pandas, numpy, scipy, sklearn; import torch_geometric; print('imports ok')"
