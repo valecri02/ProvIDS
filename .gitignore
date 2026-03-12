@@ -6,3 +6,5 @@ darpa_preprocessing/data
 darpa_preprocessing/parse/lib
 **/__pycache__
 **/.ipynb_checkpoints
+tgn_mem_theia_*
+memgraph/*
