@@ -41,6 +41,9 @@ def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    # Maybe need to set these for full determinism
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False -- this decreases performances
 
 
 def compute_stats(data, split, init_time, ext_roll=False):

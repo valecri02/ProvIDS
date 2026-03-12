@@ -80,6 +80,7 @@ if __name__ == "__main__":
 
     set_seed(args.exp_seed)
 
+    # GETTING RESOURCES
     if not args.debug:
         if args.cluster:
             # Kubernetes cluster init
@@ -108,6 +109,7 @@ if __name__ == "__main__":
                      num_gpus=int(os.environ.get('NUM_GPUS', 0)))
             print(f"Resources: CPUS: {os.environ.get('NUM_CPUS', 2)}, GPUS={os.environ.get('NUM_GPUS', 0)}")
 
+    # ----CREATING DIRECTORIED + ACCESSING DIRECTORIES
     args.save_dir = os.path.abspath(args.save_dir)
     args.data_dir = os.path.join(os.path.abspath(args.data_dir))
     if not os.path.isdir(args.data_dir): os.makedirs(args.data_dir)
@@ -126,7 +128,9 @@ if __name__ == "__main__":
     partial_res_pkl = os.path.join(result_path, 'partial_results.pkl')
     partial_res_csv = os.path.join(result_path, 'partial_results.csv')
     final_res_csv = os.path.join(result_path, 'model_selection_results.csv')
+    # -----
 
+    # GETTING INMEMORY DATASET
     data, _ = get_dataset(root=args.data_dir, name=args.data_name, version=args.version, seed=args.exp_seed)
 
     if isinstance(data, DARPADataset_Static):
@@ -153,9 +157,12 @@ if __name__ == "__main__":
     del data
     gc.collect()
 
+    # ----------- GET MODEL --------------------
     model_instance, get_conf = MODEL_CONFS[args.model]
 
     num_conf = len(list(get_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)))
+    print("N conf", num_conf)
+    print(list(get_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)))
     pbar = tqdm.tqdm(total= num_conf*args.num_runs)
     df = []
     ray_ids = []

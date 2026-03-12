@@ -8,3 +8,4 @@ darpa_preprocessing/parse/lib
 **/.ipynb_checkpoints
 tgn_mem_theia_*
 memgraph/*
+conda_ctdg_pyg_activate.sh
