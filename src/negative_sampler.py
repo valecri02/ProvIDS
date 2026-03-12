@@ -29,13 +29,15 @@ class NegativeSampler:
         rng = default_rng(eval_seed) if eval else self.rng
         neg_dst = rng.choice(self.dst_nodes, size=src.shape[0])
 
+        # add the negative edge after checking 100 times if that edge correspond to an actual edge
         if self.check_link_existence:
             for i in range(src.shape[0]):
                 j = 0
-                while self._exists(src[i].item(), neg_dst[i].item()) or j > 100:
+                # Try up to 100 times to sample a negative destination that does not exist
+                while self._exists(src[i].item(), neg_dst[i].item()) and j < 100:
                     neg_dst[i] = rng.choice(self.dst_nodes, size=1)
                     j += 1
-                if j > 100:
+                if j >= 100:
                     print(f'NegativeSampler: after 100 attemps failed to find an unseen neg_dst for node {src[i]}')
 
         return torch.tensor(neg_dst, dtype=torch.long, device=src.device)
@@ -55,6 +57,14 @@ class HeterogeneousNegativeSampler:
                  check_link_existence: bool = True, strategy: str = 'random') -> None:
         
         self.neighs = defaultdict(set)
+
+        # populating neighs
+        if check_link_existence:
+            for src, dst in zip(src_nodes, dst_nodes):
+                if torch.is_tensor(src): src = src.item()
+                if torch.is_tensor(dst): dst = dst.item()
+                self.neighs[src].add(dst)
+
         self.src_nodes = src_nodes.unique().to('cpu')
         self.dst_nodes = {}
         for i in dst_types.unique():
@@ -70,9 +80,23 @@ class HeterogeneousNegativeSampler:
         neg_dst = np.zeros_like(src.cpu())
         for i in range(src.shape[0]):
             neg_dst[i] = rng.choice(self.dst_nodes[dst_types[i].item()], size=1)
+            
+            # Check if link already exists
+            if self.check_link_existence:
+                j = 0
+                while self._exists(src[i].item(), neg_dst[i].item()) and j < 100:
+                    neg_dst[i] = rng.choice(self.dst_nodes[dst_types[i].item()], size=1)
+                    j += 1
+                if j >= 100:
+                    print(f'HeterogeneousNegativeSampler: after 100 attempts failed to find an unseen neg_dst for node {src[i]}')
+
 
         return torch.tensor(neg_dst, dtype=torch.long, device=src.device)
 
+    def _exists(self, src, dst):
+        if torch.is_tensor(src): src = src.item()
+        if torch.is_tensor(dst): dst = dst.item()
+        return dst in self.neighs[src]
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}'
