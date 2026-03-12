@@ -24,7 +24,7 @@ export NUM_CPUS=4
 export NUM_GPUS=1
 
 # Repo root
-cd "/work3/s253892/ProvCTDG"
+cd "/work3/s253892/ProvIDS"
 echo "Repo CWD: $(pwd)"
 
 DATA_DIR="/work3/s253892/ProvIDS/DATA/DATA"
