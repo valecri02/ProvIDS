@@ -8,23 +8,23 @@ def get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, 
     # OHD-TGN: 'one_hot_dir' = [True]
     # DIR-TGN: 'dir_GNN' = [True]
     confs = {
-        'aggregator': ['last', 'sum', 'mean'],
-        'embedding_dim': [100, 64], #, 200, 64], #32, 64, 128], 
+        'aggregator': ['last'],
+        'embedding_dim': [100], #, 200, 64], #32, 64, 128], 
         'time_dim': [100], #32, 64, 128], 
-        'lr': [0.00001, 0.000001], #, 0.001],#, 0.0001],
+        'lr': [1e-5], #, 0.001],#, 0.0001],
         'wd': [0.0001], #0.00001],
         'gnn_act': ['relu'],
         'sampler_size': [10], #10, 5],
         'include_edge': [False],
-        'hetero_gnn':[False, True],
+        'hetero_gnn':[False],
         'include_features': [True],
         'encode_edge': [True],
-        'dir_GNN': [False, True],
+        'dir_GNN': [False],
         'memory':[True],
         'num_layers':[1, 2],
-        'hetero_transformer':[True, False],
-        'one_hot_dir':[True, False],
-        'run_default_TGN':[False]
+        'hetero_transformer':[False],
+        'one_hot_dir':[False],
+        'run_default_TGN':[True]
     }
 
     for params in cartesian_product(confs):
