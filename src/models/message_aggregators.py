@@ -15,7 +15,12 @@ import wandb
 class LastAggregator(torch.nn.Module):
     def forward(self, msg: Tensor, index: Tensor, t: Tensor, dim_size: int):
         from torch_scatter import scatter_max
-        _, argmax = scatter_max(t, index, dim=0, dim_size=dim_size)
+        # t contains the timestamp of the events
+        # index contains an integer that represent the node to which the message belong
+        # dim_size should be equal to max(index)+1 -> corresponds to the number of nodes
+        _, argmax = scatter_max(t, index, dim=0, dim_size=dim_size) 
+        # argmax contain a list with the position in "t" with the max value for each index
+         
         out = msg.new_zeros((dim_size, msg.size(-1)))
         mask = argmax < msg.size(0)  # Filter items with at least one entry.
         out[mask] = msg[argmax[mask]]
@@ -50,11 +55,14 @@ class RNNAggregator(torch.nn.Module):
         out = msg.new_zeros((dim_size, msg.size(-1)))
         # get the grouping indices
         t0 = time.time()
+
+        # sorting messages and indexes (node) by timestamp of the messages
         sort_indices = torch.sort(t)[1]
         index = index[sort_indices]
         msg = msg[sort_indices]
         t1 = time.time()
-        indices, msgs = get_indices(index, msg)
+        # grouping messages belonging to the same node
+        indices, msgs = get_indices(index, msg) 
         if self.log:
             wandb.log({"get_indices time": time.time() - t1})
         # create the node-wise message sequences
@@ -66,8 +74,13 @@ class RNNAggregator(torch.nn.Module):
             msgs = pad_sequence(msgs)
             if self.log:
                 wandb.log({'msgs_size':msgs.size(0)*msgs.size(1)})
+
+            # initial state: zeros
             hx = msg.new_zeros((1, len(indices), self.hidden_dim))
-            _, hn = self.rnn(msgs, hx)
+            # getting the updated hidden state (after getting msgs)
+            # aggregating messages for the same node
+            _, hn = self.rnn(msgs, hx)  # hn has the same size of hx
+            # linear transforation to get the output (aggregation of the messages)
             hn = self.mlp(hn.squeeze())
             out[list(indices.keys())] = hn
         if self.log:
