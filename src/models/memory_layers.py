@@ -75,6 +75,16 @@ class GeneralMemory(TGNMemory):
         if hasattr(self.gru, 'reset_parameters'):
             self.gru.reset_parameters()
 
+    # ------ TGNMemory methods ------------------------------------------------------------------------
+    # self.reset_parameters() -- Resets all learnable parameters of the module. 
+    # self.reset_state() -- Resets the memory to its initial state.
+    # self.detach() -- Detaches the memory from gradient computation.
+    # self.forward(n_id: Tensor) -- 
+    #   Returns, for all nodes :obj:`n_id`, their current memory and their last updated timestamp.
+    # self.update_state(src: Tensor, dst: Tensor, t: Tensor, raw_msg: Tensor)
+    #   Updates the memory with newly encountered interactions: obj:`(src, dst, t, raw_msg)`.
+    # -------------------------------------------------------------------------------------------------
+    
     def train(self, mode: bool = True):
         """Sets the module in training mode."""
         if self.training and not mode:
