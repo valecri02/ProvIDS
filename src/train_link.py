@@ -16,7 +16,11 @@ import os
 def train(data, model, optimizer, train_loader, criterion, neighbor_loader, helper, train_neg_sampler=None, device='cpu', backward=True, static=False, conf=None):
     model.train()
     # Start with a fresh memory and an empty graph
-    model.reset_memory()
+    memory_mode = int(conf.get('memory_enhancement', 0)) if conf is not None else 0
+    if (not static) and memory_mode == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
+        model.warm_reset_memory(data.x)
+    else:
+        model.reset_memory()
     neighbor_loader.reset_state()
 
     for batch in train_loader:
@@ -239,6 +243,10 @@ def link_prediction_single(model_instance, conf):
     # Define model
     if conf['debug'] and conf['model'] == 'TGN':
         conf['model_params']['log'] = conf['wandb']
+
+    # Pass CLI-level option into the TGN constructor only.
+    if conf['model'] == 'TGN' and 'memory_enhancement' in conf:
+        conf['model_params']['memory_enhancement'] = int(conf['memory_enhancement'])
     if 'hetero_gnn' in conf['model_params']:
         model = model_instance(**conf['model_params'], data_metadata=data_metadata).to(device)
     else:
@@ -300,7 +308,10 @@ def link_prediction_single(model_instance, conf):
                 neighbor_loader=neighbor_loader, train_neg_sampler=train_neg_link_sampler, helper=assoc, device=device,
                 backward=not conf['model']=='EdgeBank', static='static' in conf['version'], conf=conf)
             
-            model.reset_memory()
+            if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
+                model.warm_reset_memory(data.x)
+            else:
+                model.reset_memory()
             neighbor_loader.reset_state()
 
             tr_scores, _ = eval(data=data, model=model, loader=train_loader, criterion=criterion, 
@@ -308,7 +319,10 @@ def link_prediction_single(model_instance, conf):
                                 eval_seed=conf['exp_seed'], device=device, eval_name='train', wandb_log=conf['wandb'], static='static' in conf['version'])
             
             if conf['reset_memory_eval']:
-                model.reset_memory()
+                if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
+                    model.warm_reset_memory(data.x)
+                else:
+                    model.reset_memory()
 
             vl_scores, vl_true_values = eval(data=data, model=model, loader=val_loader, criterion=criterion, 
                                             neighbor_loader=neighbor_loader, neg_sampler=val_neg_link_sampler, 
@@ -384,7 +398,10 @@ def link_prediction_single(model_instance, conf):
                                                              check_link_existence=not conf['no_check_link_existence'],
                                                              name='test', seed=conf['exp_seed']+3)
 
-        model.reset_memory()
+        if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
+            model.warm_reset_memory(data.x)
+        else:
+            model.reset_memory()
         neighbor_loader.reset_state()
 
         tr_scores, tr_true_values = eval(data=data, model=model, loader=train_loader, criterion=criterion, 
@@ -393,7 +410,10 @@ def link_prediction_single(model_instance, conf):
                                          eval_name='train_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], static='static' in conf['version'])
         
         if conf['reset_memory_eval']:
-            model.reset_memory()
+            if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
+                model.warm_reset_memory(data.x)
+            else:
+                model.reset_memory()
 
         vl_scores, vl_true_values = eval(data=data, model=model, loader=val_loader, criterion=criterion, 
                                          neighbor_loader=neighbor_loader, neg_sampler=tmp_val_neg_link_sampler, 
@@ -401,7 +421,10 @@ def link_prediction_single(model_instance, conf):
                                          eval_name='val_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], static='static' in conf['version'])
         
         if conf['reset_memory_eval']:
-            model.reset_memory()
+            if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
+                model.warm_reset_memory(data.x)
+            else:
+                model.reset_memory()
 
         ts_scores, ts_true_values = eval(data=data, model=model, loader=test_loader, criterion=criterion, 
                                          neighbor_loader=neighbor_loader, neg_sampler=tmp_test_neg_link_sampler, 

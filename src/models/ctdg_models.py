@@ -144,6 +144,30 @@ class GenericModel(torch.nn.Module):
     def reset_memory(self):
         if self.memory is not None: self.memory.reset_state()
 
+    @torch.no_grad()
+    def warm_reset_memory(self, x_all: torch.Tensor):
+        """Reset memory and warm-start memory values from node features.
+
+        This is meant for the DARPA setting where `x_all` are categorical
+        features and `self.embeddings` encodes them into a dense vector.
+        """
+        self.reset_memory()
+        if self.memory is None or not hasattr(self.memory, 'memory'):
+            return
+        if x_all is None:
+            return
+        if len(self.embeddings) == 0:
+            return
+
+        x_new = encode_features(self, x_all)
+
+        mem = self.memory.memory
+        if x_new.size(0) != mem.size(0):
+            raise ValueError(f"warm_reset_memory: x has {x_new.size(0)} nodes but memory has {mem.size(0)}")
+        if x_new.size(1) != mem.size(1):
+            raise ValueError(f"warm_reset_memory: x dim={x_new.size(1)} but memory dim={mem.size(1)}")
+        mem.copy_(x_new)
+
     def update(self, src, pos_dst, t, msg, *args, **kwargs):
         if self.memory is not None: self.memory.update_state(src, pos_dst, t, msg)
 
@@ -261,7 +285,8 @@ class TGN(GenericModel):
                  data_metadata:Tuple = (),
                  log:bool = False,
                  hetero_transformer:bool=False, 
-                 one_hot_dir:bool=False
+                 one_hot_dir:bool=False,
+                 memory_enhancement: int = 0
 
         ):
 
@@ -273,6 +298,8 @@ class TGN(GenericModel):
             aggregator_module = AGGREGATOR_CONFS[aggregator]()
 
         
+        self.memory_enhancement = int(memory_enhancement)
+
         # Define memory
         if memory:
             memory = GeneralMemory(

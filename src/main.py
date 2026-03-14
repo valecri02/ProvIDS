@@ -67,6 +67,14 @@ if __name__ == "__main__":
     parser.add_argument('--verbose', help='Every <patience> epochs it prints the average time to compute an epoch.', action='store_true')
     parser.add_argument('--inference', help='Run inference only', action='store_true')
 
+    parser.add_argument(
+        '--memory_enhancement',
+        help='Memory enhancement mode. 0: baseline. 1: warm-start memory from node features. 2: warm-start + update memory using GNN embeddings (detached).',
+        default=0,
+        type=int,
+        choices=[0, 1, 2],
+    )
+
     parser.add_argument('--reset_memory_eval', help='Reset memory before every evaluation (val/test).', action='store_true')
     
     
