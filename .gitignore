@@ -9,3 +9,5 @@ darpa_preprocessing/parse/lib
 tgn_mem_theia_*
 memgraph/*
 conda_ctdg_pyg_activate.sh
+experiments*
+good_run*
