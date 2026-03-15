@@ -6,7 +6,7 @@ from typing import Callable, Optional, Any, Dict, Union, List, Tuple, Set
 from .predictors import *
 from .memory_layers import *
 from .gnn_layers import *
-from .message_aggregators import AGGREGATOR_CONFS, IdentityMessage
+from .message_aggregators import AGGREGATOR_CONFS, IdentityMessage, RawOnlyMessage
 import time
 import wandb
 import numpy as np
@@ -169,7 +169,42 @@ class GenericModel(torch.nn.Module):
         mem.copy_(x_new)
 
     def update(self, src, pos_dst, t, msg, *args, **kwargs):
-        if self.memory is not None: self.memory.update_state(src, pos_dst, t, msg)
+        if self.memory is None:
+            return
+
+        if getattr(self, 'memory_enhancement', 0) != 2:
+            self.memory.update_state(src, pos_dst, t, msg)
+            return
+
+        # Mode2: update memory using cached GNN embeddings + edge message.
+        if not hasattr(self, '_mode2_cached_z_src') or not hasattr(self, '_mode2_cached_z_dst'):
+            raise RuntimeError(
+                "memory_enhancement==2 requires a forward pass before update() to cache embeddings"
+            )
+        if not hasattr(self, '_mode2_cached_src') or not hasattr(self, '_mode2_cached_dst'):
+            raise RuntimeError(
+                "memory_enhancement==2 cache is missing src/dst tensors"
+            )
+
+        if self._mode2_cached_src.shape != src.shape or self._mode2_cached_dst.shape != pos_dst.shape:
+            raise RuntimeError("memory_enhancement==2 cache shape mismatch between forward and update")
+        if not torch.equal(self._mode2_cached_src, src) or not torch.equal(self._mode2_cached_dst, pos_dst):
+            raise RuntimeError("memory_enhancement==2 cache mismatch: update() must match the last forward() batch")
+
+        edge_msg = msg
+        if getattr(self, 'encode_edge', False) and getattr(self, 'edge_encoder', None) is not None:
+            edge_msg = self.edge_encoder(edge_msg)
+
+        raw_msg = torch.cat([self._mode2_cached_z_src, self._mode2_cached_z_dst, edge_msg], dim=-1)
+
+        if getattr(self, '_debug_mode2', False) and not getattr(self, '_mode2_debug_update_printed', False):
+            self._mode2_debug_update_printed = True
+            print(
+                "[mode2] update_state raw_msg shapes: "
+                f"z_src={tuple(self._mode2_cached_z_src.shape)}, z_dst={tuple(self._mode2_cached_z_dst.shape)}, "
+                f"edge_msg={tuple(edge_msg.shape)}, raw_msg={tuple(raw_msg.shape)}"
+            )
+        self.memory.update_state(src, pos_dst, t, raw_msg)
 
     def detach_memory(self):
         if self.memory is not None: self.memory.detach()
@@ -250,6 +285,21 @@ class GenericModel(torch.nn.Module):
                     z = out
                     #wandb.log({"number of nodes": z.shape[0]})
                     #wandb.log({"gnn time": time.time() - time0})
+
+        # Cache embeddings for mode2 (memory update using embeddings instead of memory states).
+        if getattr(self, 'memory_enhancement', 0) == 2:
+            # Store detached tensors so raw messages do not carry autograd graphs.
+            self._mode2_cached_src = src
+            self._mode2_cached_dst = pos_dst
+            self._mode2_cached_z_src = z[id_mapper[src]].detach()
+            self._mode2_cached_z_dst = z[id_mapper[pos_dst]].detach()
+
+            if getattr(self, '_debug_mode2', False) and not getattr(self, '_mode2_debug_forward_printed', False):
+                self._mode2_debug_forward_printed = True
+                print(
+                    "[mode2] cached embeddings shapes: "
+                    f"z={tuple(z.shape)}, z_src={tuple(self._mode2_cached_z_src.shape)}, z_dst={tuple(self._mode2_cached_z_dst.shape)}"
+                )
         target_message = self.edge_encoder(batch.msg) if self.include_edge else batch.msg
         pos_out = self.link_pred(z[id_mapper[src]], z[id_mapper[pos_dst]], target_message)
         neg_out = self.link_pred(z[id_mapper[src]], z[id_mapper[neg_dst]], target_message) if neg_dst is not None else None
@@ -292,22 +342,33 @@ class TGN(GenericModel):
 
         edge_encoder = torch.nn.Linear(edge_dim, edge_dim) if encode_edge or include_edge else None
 
+        self.memory_enhancement = int(memory_enhancement)
+
+        if self.memory_enhancement == 2:
+            if len(gnn_hidden_dim) == 0:
+                raise ValueError("memory_enhancement==2 requires at least one GNN layer (gnn_hidden_dim non-empty)")
+            gnn_out_dim = gnn_hidden_dim[-1] * 2
+            memory_raw_msg_dim = int(edge_dim + 2 * gnn_out_dim)
+            message_module = RawOnlyMessage(memory_raw_msg_dim, time_dim)
+            message_dim_for_agg = message_module.out_channels
+        else:
+            memory_raw_msg_dim = int(edge_dim)
+            message_module = IdentityMessage(edge_dim, memory_dim, time_dim, edge_encoder if encode_edge else None)
+            message_dim_for_agg = 2 * memory_dim + edge_dim + time_dim
+
         if aggregator == 'rnn':
-            aggregator_module = AGGREGATOR_CONFS[aggregator](2*memory_dim + edge_dim + time_dim, 2*memory_dim + edge_dim + time_dim, log)
+            aggregator_module = AGGREGATOR_CONFS[aggregator](message_dim_for_agg, message_dim_for_agg, log)
         else:
             aggregator_module = AGGREGATOR_CONFS[aggregator]()
-
-        
-        self.memory_enhancement = int(memory_enhancement)
 
         # Define memory
         if memory:
             memory = GeneralMemory(
                 num_nodes,
-                edge_dim,
+                memory_raw_msg_dim,
                 memory_dim,
                 time_dim,
-                message_module=IdentityMessage(edge_dim, memory_dim, time_dim, edge_encoder if encode_edge else None),
+                message_module=message_module,
                 aggregator_module=aggregator_module,
                 rnn='GRUCell',
                 init_time=init_time

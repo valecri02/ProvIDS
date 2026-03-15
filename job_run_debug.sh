@@ -1,0 +1,54 @@
+#!/bin/bash
+### LSF options
+#BSUB -q gpuv100
+#BSUB -J debug
+#BSUB -o tgn_debug_%J.out
+#BSUB -e tgn_debug_%J.err
+#BSUB -n 4
+#BSUB -R "span[hosts=1]"
+#BSUB -R "rusage[mem=32GB]"
+#BSUB -M 32GB
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -W 24:00
+
+set -euo pipefail
+
+module purge
+
+# Conda setup
+source ~/miniforge3/bin/activate
+conda activate ctdg
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_PRELOAD="$CONDA_PREFIX/lib/libstdc++.so.6${LD_PRELOAD:+:$LD_PRELOAD}"
+export NUM_CPUS=4
+export NUM_GPUS=1
+
+# Repo root
+cd "/work3/s253892/ProvIDS"
+echo "Repo CWD: $(pwd)"
+
+DATA_DIR="/work3/s253892/ProvIDS/DATA/DATA"
+DATA_NAME="darpa_theia_0to25"
+SAVE_DIR="/work3/s253892/ProvIDS/debugging/tgn_theia"
+MODEL="TGN"
+
+python -c "import torch, pandas, numpy, scipy, sklearn; import torch_geometric; print('imports ok')"
+
+# Run training (from README)
+cd src
+python -u main.py \
+  --data_name ${DATA_NAME} \
+  --model ${MODEL} \
+  --version temporal \
+  --debug --cpu \
+  --epochs 1 \
+  --num_runs 1 \
+  --batch  \
+  --save_dir ${SAVE_DIR} \
+  --data_dir ${DATA_DIR} \
+  --neg_sampler HeterogeneousNegativeSampler \
+  --metric auc \
+  --memory_enhancement 2 
+
+
+echo "Job finished at $(date)"
