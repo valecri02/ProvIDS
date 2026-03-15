@@ -29,7 +29,7 @@ echo "Repo CWD: $(pwd)"
 
 DATA_DIR="/work3/s253892/ProvIDS/DATA/DATA"
 DATA_NAME="darpa_theia_0to25"
-SAVE_DIR="/work3/s253892/ProvIDS/experiments/tgn_theia_12layers"
+SAVE_DIR="/work3/s253892/ProvIDS/experiments/warm_start_1_run_lastagg"
 MODEL="TGN"
 
 python -c "import torch, pandas, numpy, scipy, sklearn; import torch_geometric; print('imports ok')"
@@ -38,18 +38,13 @@ python -c "import torch, pandas, numpy, scipy, sklearn; import torch_geometric; 
 cd src
 python -u main.py \
   --data_name ${DATA_NAME} \
-  --model ${MODEL} \
-  --version temporal \
-  --parallelism 4 \
+  --parallelism 2 \
   --epochs 50 \
-  --batch 200 \
   --save_dir ${SAVE_DIR} \
   --data_dir ${DATA_DIR} \
   --num_runs 1 \
   --patience 5 \
-  --neg_sampler HeterogeneousNegativeSampler \
   --metric auc \
-  --strategy split \
-  --exp_seed 9
+  --memory_enhancement 1
 
 echo "Job finished at $(date)"
