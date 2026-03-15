@@ -69,7 +69,7 @@ if __name__ == "__main__":
 
     parser.add_argument(
         '--memory_enhancement',
-        help='Memory enhancement mode. 0: baseline. 1: warm-start memory from node features. 2: update memory using (detached) GNN embeddings in messages (memory reset remains zeros).',
+        help='Memory enhancement mode. 0: baseline. 1: warm-start memory from node features. 2: warm-start + update memory using GNN embeddings (detached).',
         default=0,
         type=int,
         choices=[0, 1, 2],

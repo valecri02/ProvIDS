@@ -99,20 +99,6 @@ class IdentityMessage(torch.nn.Module):
         if self.edge_encoder is not None:
             raw_msg = self.edge_encoder(raw_msg)
         return torch.cat([z_src, z_dst, raw_msg, t_enc], dim=-1)
-
-class RawOnlyMessage(torch.nn.Module):
-    """Message module that ignores memory embeddings and relies only on `raw_msg`.
-
-    This is useful when `raw_msg` already contains the desired information, e.g.
-    concatenated GNN embeddings: `[z_src_gnn | z_dst_gnn | edge_msg]`.
-    """
-
-    def __init__(self, raw_msg_dim: int, time_dim: int):
-        super().__init__()
-        self.out_channels = raw_msg_dim + time_dim
-
-    def forward(self, z_src: Tensor, z_dst: Tensor, raw_msg: Tensor, t_enc: Tensor):
-        return torch.cat([raw_msg, t_enc], dim=-1)
     
 
 AGGREGATOR_CONFS = {

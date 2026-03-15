@@ -6,7 +6,7 @@ from typing import Callable, Optional, Any, Dict, Union, List, Tuple, Set
 from .predictors import *
 from .memory_layers import *
 from .gnn_layers import *
-from .message_aggregators import AGGREGATOR_CONFS, IdentityMessage, RawOnlyMessage
+from .message_aggregators import AGGREGATOR_CONFS, IdentityMessage
 import time
 import wandb
 import numpy as np
@@ -327,33 +327,22 @@ class TGN(GenericModel):
 
         edge_encoder = torch.nn.Linear(edge_dim, edge_dim) if encode_edge or include_edge else None
 
-        self.memory_enhancement = int(memory_enhancement)
-
-        if self.memory_enhancement == 2:
-            if len(gnn_hidden_dim) == 0:
-                raise ValueError("memory_enhancement==2 requires at least one GNN layer (gnn_hidden_dim non-empty)")
-            gnn_out_dim = gnn_hidden_dim[-1] * 2
-            memory_raw_msg_dim = int(edge_dim + 2 * gnn_out_dim)
-            message_module = RawOnlyMessage(memory_raw_msg_dim, time_dim)
-            message_dim_for_agg = message_module.out_channels
-        else:
-            memory_raw_msg_dim = int(edge_dim)
-            message_module = IdentityMessage(edge_dim, memory_dim, time_dim, edge_encoder if encode_edge else None)
-            message_dim_for_agg = 2 * memory_dim + edge_dim + time_dim
-
         if aggregator == 'rnn':
-            aggregator_module = AGGREGATOR_CONFS[aggregator](message_dim_for_agg, message_dim_for_agg, log)
+            aggregator_module = AGGREGATOR_CONFS[aggregator](2*memory_dim + edge_dim + time_dim, 2*memory_dim + edge_dim + time_dim, log)
         else:
             aggregator_module = AGGREGATOR_CONFS[aggregator]()
+
+        
+        self.memory_enhancement = int(memory_enhancement)
 
         # Define memory
         if memory:
             memory = GeneralMemory(
                 num_nodes,
-                memory_raw_msg_dim,
+                edge_dim,
                 memory_dim,
                 time_dim,
-                message_module=message_module,
+                message_module=IdentityMessage(edge_dim, memory_dim, time_dim, edge_encoder if encode_edge else None),
                 aggregator_module=aggregator_module,
                 rnn='GRUCell',
                 init_time=init_time
