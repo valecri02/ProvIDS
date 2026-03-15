@@ -26,6 +26,7 @@ def train(data, model, optimizer, train_loader, criterion, neighbor_loader, help
     for batch in train_loader:
         t_batch_start = time.time()
         optimizer.zero_grad()
+        aux = None
         if not static:
             batch = batch.to(device)
             src, pos_dst, t, msg, static_x = batch.src, batch.dst, batch.t, batch.msg, batch.x
@@ -56,8 +57,10 @@ def train(data, model, optimizer, train_loader, criterion, neighbor_loader, help
                     wandb.log({"neighbor loader time": time.time() - t_start})
             helper[n_id] = torch.arange(n_id.size(0), device=device)
             
-            pos_out, neg_out = model(batch=batch, n_id=n_id, msg=data.msg[e_id].to(device), t=data.t[e_id].to(device),
+            _out = model(batch=batch, n_id=n_id, msg=data.msg[e_id].to(device), t=data.t[e_id].to(device),
                                     edge_index=edge_index, id_mapper=helper, src_indic=src_indic)
+            pos_out, neg_out, *rest = _out
+            aux = rest[0] if len(rest) > 0 else None
         else:
             t = None
             static_x = None
@@ -73,7 +76,10 @@ def train(data, model, optimizer, train_loader, criterion, neighbor_loader, help
             loss += criterion(neg_out, torch.zeros_like(neg_out))
 
         # Update memory and neighbor loader with ground-truth state.
-        model.update(src, pos_dst, t, msg, static_x)
+        if int(getattr(model, 'memory_enhancement', 0)) == 2:
+            model.update(src, pos_dst, t, msg, static_x, aux=aux)
+        else:
+            model.update(src, pos_dst, t, msg, static_x)
         neighbor_loader.insert(src.cpu(), pos_dst.cpu())
         
         if backward:
@@ -93,6 +99,7 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
 
     y_pred_list, y_true_list, y_pred_confidence_list, hash_id_list, malicious_list = [], [], [], [], []
     for batch in loader:
+        aux = None
         if not static:
             batch = batch.to(device)
             src, pos_dst, t, msg, static_x = batch.src, batch.dst, batch.t, batch.msg, batch.x
@@ -116,8 +123,10 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
 
             helper[n_id] = torch.arange(n_id.size(0), device=device)
             
-            pos_out, neg_out = model(batch=batch, n_id=n_id, msg=data.msg[e_id].to(device), t=data.t[e_id].to(device),
+            _out = model(batch=batch, n_id=n_id, msg=data.msg[e_id].to(device), t=data.t[e_id].to(device),
                                     edge_index=edge_index, id_mapper=helper, src_indic=src_indic)
+            pos_out, neg_out, *rest = _out
+            aux = rest[0] if len(rest) > 0 else None
         else:
             t = None
             static_x = None
@@ -148,7 +157,10 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
             malicious_list.append(batch['malicious'])
 
         # Update memory and neighbor loader with ground-truth state.
-        model.update(src, pos_dst, t, msg, static_x)
+        if int(getattr(model, 'memory_enhancement', 0)) == 2:
+            model.update(src, pos_dst, t, msg, static_x, aux=aux)
+        else:
+            model.update(src, pos_dst, t, msg, static_x)
         neighbor_loader.insert(src.cpu(), pos_dst.cpu())
 
     t1 = time.time()
