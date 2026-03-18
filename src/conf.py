@@ -8,7 +8,7 @@ def get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, 
     # OHD-TGN: 'one_hot_dir' = [True]
     # DIR-TGN: 'dir_GNN' = [True]
     confs = {
-        'aggregator': ['last'],
+        'aggregator': ['last', 'rnn'],
         'embedding_dim': [100], #, 200, 64], #32, 64, 128], 
         'time_dim': [100], #32, 64, 128], 
         'lr': [1e-5], #, 0.001],#, 0.0001],
@@ -21,7 +21,7 @@ def get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, 
         'encode_edge': [True],
         'dir_GNN': [False],
         'memory':[True],
-        'num_layers':[1, 2],
+        'num_layers':[2, 3],
         'hetero_transformer':[False],
         'one_hot_dir':[False],
         'run_default_TGN':[True]
