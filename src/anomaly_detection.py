@@ -23,16 +23,16 @@ def compute_detection_performance(prediction_folder, ground_truth_path, model_na
         split = "0to210"
         # Ground Truth
         ## part1
-        firefox_backdoor = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_firefox_backdoor_final.csv"))
+        firefox_backdoor = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_firefox_backdoor_final_aggregated.csv"))
         ## part2
-        browser_extension = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_browser_extension_final.csv"))
-        pine_phishing_exe = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_pine_phishing_exe_final.csv"))
-        trace_thunderbird_phishing_exe = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_thunderbird_phishing_exe_final.csv"))
+        browser_extension = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_browser_extension_final_aggregated.csv"))
+        pine_phishing_exe = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_pine_phishing_exe_final._aggregated.csv"))
+        trace_thunderbird_phishing_exe = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_thunderbird_phishing_exe_final_aggregated.csv"))
         attacks_dict = {"firefox_backdoor":firefox_backdoor, "browser_extension":browser_extension, "pine_phishing_exe":pine_phishing_exe, "trace_thunderbird_phishing_exe":trace_thunderbird_phishing_exe}
     elif dataset == 'theia':
         split = "0to25"
-        firefox_backdoor = pd.read_csv(os.path.join(ground_truth_path,"TC3_theia_firefox_backdoor_final.csv"))
-        browser_extension = pd.read_csv(os.path.join(ground_truth_path,"TC3_theia_browser_extension_final.csv"))
+        firefox_backdoor = pd.read_csv(os.path.join(ground_truth_path,"TC3_theia_firefox_backdoor_final_aggregated.csv"))
+        browser_extension = pd.read_csv(os.path.join(ground_truth_path,"TC3_theia_browser_extension_final_aggregated.csv"))
         attacks_dict = {"firefox_backdoor":firefox_backdoor, "browser_extension":browser_extension}
     else:
         raise NotImplemented
@@ -139,13 +139,13 @@ def compute_detection_performance(prediction_folder, ground_truth_path, model_na
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--prediction_folder', requierd=True)
-    parser.add_argument('--ground_truth_path', requierd=True)
+    parser.add_argument('--prediction_folder', required=True)
+    parser.add_argument('--ground_truth_path', required=True)
 
     parser.add_argument('--model_name', default="TGN")
     parser.add_argument('--conf_id', default=0)
     parser.add_argument('--dataset', type=str.lower, default='trace', choices=['trace', 'theia'])
-    parser.add_argument('--num_seeds', default=5)
+    parser.add_argument('--num_seeds', default=5, type=int)
     parser.add_argument('--log_wandb', action="store_true")
     parser.add_argument('--save_folder', default="figures/")
 
