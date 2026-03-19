@@ -23,27 +23,26 @@ export LD_PRELOAD="$CONDA_PREFIX/lib/libstdc++.so.6${LD_PRELOAD:+:$LD_PRELOAD}"
 export NUM_CPUS=4
 export NUM_GPUS=1
 
+SAVE_DIR=$(pwd)
+
 # Repo root
 cd "/work3/s253892/ProvIDS"
 echo "Repo CWD: $(pwd)"
-
-DATA_DIR="/work3/s253892/ProvIDS/DATA/DATA"
-DATA_NAME="darpa_theia_0to25"
-SAVE_DIR="/work3/s253892/ProvIDS/experiments/warm_start_1_run_lastagg"
-MODEL="TGN"
 
 python -c "import torch, pandas, numpy, scipy, sklearn; import torch_geometric; print('imports ok')"
 
 # Run training (from README)
 cd src
 python -u main.py \
-  --data_name ${DATA_NAME} \
+  --data_name "darpa_theia_0to25" \
+  --model "TGN" \
   --parallelism 2 \
+  --batch 200 \
   --epochs 50 \
-  --save_dir ${SAVE_DIR} \
-  --data_dir ${DATA_DIR} \
-  --num_runs 1 \
   --patience 5 \
+  --save_dir ${SAVE_DIR} \
+  --data_dir "/work3/s253892/ProvIDS/DATA/DATA" \
+  --num_runs 1 \
   --metric auc \
   --memory_enhancement 1
 
