@@ -83,9 +83,10 @@ class GeneralMemory(TGNMemory):
         self._reset_message_store_z()
 
     def _reset_message_store_z(self):
-        i = self.memory.new_empty((0, ), device=self.device, dtype=torch.long)
-        msg = self.memory.new_empty((0, self.raw_msg_dim), device=self.device)
-        z = self.memory.new_empty((0, self.memory.size(-1)), device=self.device)
+        device = self.memory.device
+        i = self.memory.new_empty((0, ), device=device, dtype=torch.long)
+        msg = self.memory.new_empty((0, self.raw_msg_dim), device=device)
+        z = self.memory.new_empty((0, self.memory.size(-1)), device=device)
         # Message store format: (src, dst, t, msg, z_src, z_dst)
         self.msg_s_store_z: TGNMessageStoreWithZType = {j: (i, i, i, msg, z, z) for j in range(self.num_nodes)}
         self.msg_d_store_z: TGNMessageStoreWithZType = {j: (i, i, i, msg, z, z) for j in range(self.num_nodes)}
@@ -107,18 +108,19 @@ class GeneralMemory(TGNMemory):
         data = [msg_store[i] for i in n_id.tolist()]
         src, dst, t, raw_msg, z_src, z_dst = list(zip(*data))
 
-        src = torch.cat(src, dim=0).to(self.device)
-        dst = torch.cat(dst, dim=0).to(self.device)
-        t = torch.cat(t, dim=0).to(self.device)
+        device = self.memory.device
+        src = torch.cat(src, dim=0).to(device)
+        dst = torch.cat(dst, dim=0).to(device)
+        t = torch.cat(t, dim=0).to(device)
 
         # Filter out empty tensors to avoid `invalid configuration argument`.
         raw_msg = [m for i, m in enumerate(raw_msg) if m.numel() > 0 or i == 0]
         z_src = [m for i, m in enumerate(z_src) if m.numel() > 0 or i == 0]
         z_dst = [m for i, m in enumerate(z_dst) if m.numel() > 0 or i == 0]
 
-        raw_msg = torch.cat(raw_msg, dim=0).to(self.device)
-        z_src = torch.cat(z_src, dim=0).to(self.device)
-        z_dst = torch.cat(z_dst, dim=0).to(self.device)
+        raw_msg = torch.cat(raw_msg, dim=0).to(device)
+        z_src = torch.cat(z_src, dim=0).to(device)
+        z_dst = torch.cat(z_dst, dim=0).to(device)
 
         t_rel = t - self.last_update[src]
         t_enc = self.time_enc(t_rel.to(raw_msg.dtype))
