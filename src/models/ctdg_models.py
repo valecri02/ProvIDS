@@ -169,7 +169,18 @@ class GenericModel(torch.nn.Module):
         mem.copy_(x_new)
 
     def update(self, src, pos_dst, t, msg, *args, **kwargs):
-        if self.memory is not None: self.memory.update_state(src, pos_dst, t, msg)
+        if self.memory is None:
+            return
+
+        aux = kwargs.get('aux', None)
+        if int(getattr(self, 'memory_enhancement', 0)) == 2 and aux is not None:
+            z_src = aux.get('z_src_gnn', None) if isinstance(aux, dict) else None
+            z_dst = aux.get('z_dst_gnn', None) if isinstance(aux, dict) else None
+            if z_src is not None and z_dst is not None and hasattr(self.memory, 'update_state_with_z'):
+                self.memory.update_state_with_z(src, pos_dst, t, msg, z_src=z_src, z_dst=z_dst)
+                return
+
+        self.memory.update_state(src, pos_dst, t, msg)
 
     def detach_memory(self):
         if self.memory is not None: self.memory.detach()
@@ -250,6 +261,13 @@ class GenericModel(torch.nn.Module):
                     z = out
                     #wandb.log({"number of nodes": z.shape[0]})
                     #wandb.log({"gnn time": time.time() - time0})
+
+        aux = None
+        if getattr(self, 'memory_enhancement', 0) == 2:
+            aux = {
+                'z_src_gnn': z[id_mapper[src]],
+                'z_dst_gnn': z[id_mapper[pos_dst]],
+            }
         target_message = self.edge_encoder(batch.msg) if self.include_edge else batch.msg
         pos_out = self.link_pred(z[id_mapper[src]], z[id_mapper[pos_dst]], target_message)
         neg_out = self.link_pred(z[id_mapper[src]], z[id_mapper[neg_dst]], target_message) if neg_dst is not None else None
