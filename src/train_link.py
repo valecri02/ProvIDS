@@ -11,17 +11,71 @@ import wandb
 import time
 import ray
 import os
+import math
+
+
+@torch.no_grad()
+def compute_memory_norm_stats(model, chunk_size: int = 200_000):
+    """Compute mean/std of L2 norms of the persistent node memory.
+
+    Uses chunking to avoid allocating an (N,) tensor for large graphs.
+    """
+    if model is None or not hasattr(model, 'memory') or model.memory is None:
+        return None
+    if not hasattr(model.memory, 'memory'):
+        return None
+    mem = model.memory.memory
+    if mem is None:
+        return None
+    n = int(mem.size(0))
+    if n == 0:
+        return {'mean': 0.0, 'std': 0.0, 'n': 0}
+
+    total = 0
+    sum_ = 0.0
+    sumsq = 0.0
+    for start in range(0, n, chunk_size):
+        end = min(n, start + chunk_size)
+        chunk = mem[start:end]
+        norms = torch.linalg.vector_norm(chunk, ord=2, dim=-1)
+        sum_ += norms.sum().item()
+        sumsq += (norms * norms).sum().item()
+        total += norms.numel()
+
+    mean = sum_ / total
+    var = max(0.0, (sumsq / total) - mean * mean)
+    std = math.sqrt(var)
+    return {'mean': mean, 'std': std, 'n': total}
 
 
 def train(data, model, optimizer, train_loader, criterion, neighbor_loader, helper, train_neg_sampler=None, device='cpu', backward=True, static=False, conf=None):
     model.train()
     # Start with a fresh memory and an empty graph
     memory_mode = int(conf.get('memory_enhancement', 0)) if conf is not None else 0
+
+    # Optional WarmStart knobs (used by model.warm_reset_memory via getattr).
+    if conf is not None:
+        if 'warm_start_alpha' in conf:
+            setattr(model, 'warm_start_alpha', float(conf['warm_start_alpha']))
+        if 'warm_start_layernorm' in conf:
+            setattr(model, 'warm_start_layernorm', bool(conf['warm_start_layernorm']))
+
     if (not static) and memory_mode == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
         model.warm_reset_memory(data.x)
     else:
         model.reset_memory()
     neighbor_loader.reset_state()
+
+    # --- WarmStart sanity check: memory norm distribution at epoch start ---
+    if conf is not None and (conf.get('debug', False) or conf.get('wandb', False)):
+        stats = compute_memory_norm_stats(model)
+        if stats is not None:
+            print(f"[memory norms @epoch start] mean={stats['mean']:.6f} std={stats['std']:.6f} n={stats['n']}")
+            if conf.get('wandb', False):
+                wandb.log({
+                    'memory_norm_mean_epoch_start': stats['mean'],
+                    'memory_norm_std_epoch_start': stats['std'],
+                }, commit=False)
 
     for batch in train_loader:
         t_batch_start = time.time()

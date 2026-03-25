@@ -10,6 +10,7 @@ from .message_aggregators import AGGREGATOR_CONFS, IdentityMessage
 import time
 import wandb
 import numpy as np
+import torch.nn.functional as F
 
 
 
@@ -160,6 +161,14 @@ class GenericModel(torch.nn.Module):
             return
 
         x_new = encode_features(self, x_all)
+
+        # Optional normalization/scaling for warm-started memory.
+        # Defaults keep previous behavior.
+        if bool(getattr(self, 'warm_start_layernorm', False)):
+            x_new = F.layer_norm(x_new, (x_new.size(-1),))
+        alpha = float(getattr(self, 'warm_start_alpha', 1.0))
+        if alpha != 1.0:
+            x_new = x_new * alpha
 
         mem = self.memory.memory
         if x_new.size(0) != mem.size(0):
