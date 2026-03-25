@@ -14,7 +14,19 @@ mpl.use('Agg')
 import matplotlib.pyplot as plt
 
 
-def compute_detection_performance(prediction_folder, ground_truth_path, model_name, conf_id, dataset, num_seeds, log_wandb, save_folder):
+def compute_detection_performance(
+    prediction_folder,
+    ground_truth_path,
+    model_name,
+    conf_id,
+    dataset,
+    num_seeds,
+    log_wandb,
+    save_folder,
+    scatter_seed=0,
+    scatter_num_bins=200,
+    scatter_max_marker_size=80.0,
+):
     save_folder = os.path.join(save_folder, model_name)
     os.makedirs(save_folder, exist_ok=True)
     if log_wandb:
@@ -52,6 +64,9 @@ def compute_detection_performance(prediction_folder, ground_truth_path, model_na
         attack_detections[k] = {}
 
     preds_total = np.zeros(len(predictions)) 
+
+    scatter_scores = None
+    scatter_y_true = None
     for seed in range(0, num_seeds):
         prediction_path = os.path.join(prediction_folder, f"split_conf_{conf_id}_detection_results-{split}_seed_{seed}.csv")
         predictions = pd.read_csv(prediction_path)
@@ -78,6 +93,11 @@ def compute_detection_performance(prediction_folder, ground_truth_path, model_na
         preds = (1 - predictions.prob.values)
         y_true = (predictions['attack']!='benign').values.astype(int)
         preds_label = preds.round().astype(int)
+
+        if seed == scatter_seed:
+            scatter_scores = preds.copy()
+            scatter_y_true = y_true.copy()
+
         fp = (preds_label.astype(bool) & ~y_true.astype(bool)).sum()
         tn = (~preds_label.astype(bool) & ~y_true.astype(bool)).sum()
         tp = (preds_label.astype(bool) & y_true.astype(bool)).sum()
@@ -115,6 +135,57 @@ def compute_detection_performance(prediction_folder, ground_truth_path, model_na
 
     malicious = preds_total[y_true==1]
     benign = preds_total[y_true==0]
+
+    if scatter_scores is None or scatter_y_true is None:
+        raise ValueError(
+            f"scatter_seed={scatter_seed} not found in evaluated seeds [0, {num_seeds - 1}]"
+        )
+
+    # Binned scatter: group similar scores into bins and show counts per class.
+    scatter_bins = np.linspace(0.0, 1.0, int(scatter_num_bins) + 1)
+    benign_counts, _ = np.histogram(scatter_scores[scatter_y_true == 0], bins=scatter_bins)
+    malicious_counts, _ = np.histogram(scatter_scores[scatter_y_true == 1], bins=scatter_bins)
+    x_centers = (scatter_bins[:-1] + scatter_bins[1:]) / 2.0
+
+    max_count = float(max(benign_counts.max(initial=0), malicious_counts.max(initial=0), 1))
+    benign_sizes = (benign_counts.astype(float) / max_count) * float(scatter_max_marker_size)
+    malicious_sizes = (malicious_counts.astype(float) / max_count) * float(scatter_max_marker_size)
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.8 * 1.1))
+    plt.rcParams.update({'font.size': 19})
+    ax.set_axisbelow(True)
+    ax.scatter(
+        x_centers,
+        np.zeros_like(x_centers),
+        s=benign_sizes,
+        alpha=0.8,
+        color='#648fff',
+        label='Benign',
+    )
+    ax.scatter(
+        x_centers,
+        np.ones_like(x_centers),
+        s=malicious_sizes,
+        alpha=0.8,
+        color='#fe6100',
+        label='Malicious',
+    )
+    ax.set_yticks([0, 1], labels=['Benign', 'Malicious'])
+    ax.set_xlim(0, 1)
+    ax.grid(axis='x', alpha=0.25)
+    ax.grid(axis='y', alpha=0.25)
+    ax.set_xlabel('Anomaly score')
+    ax.set_ylabel('Class')
+    ax.legend(loc='best')
+    scatter_path = os.path.join(
+        save_folder,
+        f"scatter_anom_{model_name}_seed_{scatter_seed}.png",
+    )
+    fig.savefig(scatter_path, bbox_inches='tight', dpi=200)
+    if log_wandb:
+        wandb.log({"scatter_anomaly_score": wandb.Image(fig)}, step=0)
+    plt.close(fig)
+
     bins = np.linspace(0, 1, 21)
     plt.figure(figsize=(6.4,4.8*1.4))
     plt.rcParams.update({'font.size': 19})
@@ -148,6 +219,10 @@ if __name__ == "__main__":
     parser.add_argument('--num_seeds', default=5, type=int)
     parser.add_argument('--log_wandb', action="store_true")
     parser.add_argument('--save_folder', default="figures/")
+
+    parser.add_argument('--scatter_seed', type=int, default=0)
+    parser.add_argument('--scatter_num_bins', type=int, default=200)
+    parser.add_argument('--scatter_max_marker_size', type=float, default=80.0)
 
 
     args = parser.parse_args()
