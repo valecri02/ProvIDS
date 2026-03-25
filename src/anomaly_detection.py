@@ -26,6 +26,7 @@ def compute_detection_performance(
     scatter_seed=0,
     scatter_num_bins=200,
     scatter_max_marker_size=80.0,
+    scatter_min_marker_size=6.0,
 ):
     save_folder = os.path.join(save_folder, model_name)
     os.makedirs(save_folder, exist_ok=True)
@@ -35,16 +36,34 @@ def compute_detection_performance(
         split = "0to210"
         # Ground Truth
         ## part1
-        firefox_backdoor = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_firefox_backdoor_final_aggregated.csv"))
+        firefox_backdoor = pd.read_csv(
+            os.path.join(ground_truth_path, "TC3_trace_firefox_backdoor_final_aggregated.csv"),
+            dtype={'edge_hash_id': 'string', 'srcnode_hash_id': 'string', 'label': 'string'},
+        )
         ## part2
-        browser_extension = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_browser_extension_final_aggregated.csv"))
-        pine_phishing_exe = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_pine_phishing_exe_final._aggregated.csv"))
-        trace_thunderbird_phishing_exe = pd.read_csv(os.path.join(ground_truth_path,"TC3_trace_thunderbird_phishing_exe_final_aggregated.csv"))
+        browser_extension = pd.read_csv(
+            os.path.join(ground_truth_path, "TC3_trace_browser_extension_final_aggregated.csv"),
+            dtype={'edge_hash_id': 'string', 'srcnode_hash_id': 'string', 'label': 'string'},
+        )
+        pine_phishing_exe = pd.read_csv(
+            os.path.join(ground_truth_path, "TC3_trace_pine_phishing_exe_final._aggregated.csv"),
+            dtype={'edge_hash_id': 'string', 'srcnode_hash_id': 'string', 'label': 'string'},
+        )
+        trace_thunderbird_phishing_exe = pd.read_csv(
+            os.path.join(ground_truth_path, "TC3_trace_thunderbird_phishing_exe_final_aggregated.csv"),
+            dtype={'edge_hash_id': 'string', 'srcnode_hash_id': 'string', 'label': 'string'},
+        )
         attacks_dict = {"firefox_backdoor":firefox_backdoor, "browser_extension":browser_extension, "pine_phishing_exe":pine_phishing_exe, "trace_thunderbird_phishing_exe":trace_thunderbird_phishing_exe}
     elif dataset == 'theia':
         split = "0to25"
-        firefox_backdoor = pd.read_csv(os.path.join(ground_truth_path,"TC3_theia_firefox_backdoor_final_aggregated.csv"))
-        browser_extension = pd.read_csv(os.path.join(ground_truth_path,"TC3_theia_browser_extension_final_aggregated.csv"))
+        firefox_backdoor = pd.read_csv(
+            os.path.join(ground_truth_path, "TC3_theia_firefox_backdoor_final_aggregated.csv"),
+            dtype={'edge_hash_id': 'string', 'srcnode_hash_id': 'string', 'label': 'string'},
+        )
+        browser_extension = pd.read_csv(
+            os.path.join(ground_truth_path, "TC3_theia_browser_extension_final_aggregated.csv"),
+            dtype={'edge_hash_id': 'string', 'srcnode_hash_id': 'string', 'label': 'string'},
+        )
         attacks_dict = {"firefox_backdoor":firefox_backdoor, "browser_extension":browser_extension}
     else:
         raise NotImplemented
@@ -57,9 +76,11 @@ def compute_detection_performance(
     ap = []
     attack_detections = {}
     prediction_path = os.path.join(prediction_folder, f"split_conf_{conf_id}_detection_results-{split}_seed_0.csv")
-    predictions = pd.read_csv(prediction_path)
-    predictions_hashes = set(predictions.hash_id)
+    predictions = pd.read_csv(prediction_path, dtype={'hash_id': 'string', 'prob': 'float64'})
+    predictions = predictions.dropna(subset=['hash_id'])
+    predictions_hashes = set(predictions['hash_id'].tolist())
     for k in attacks_dict:
+        attacks_dict[k] = attacks_dict[k].dropna(subset=['edge_hash_id'])
         attacks_dict[k] = attacks_dict[k][attacks_dict[k].edge_hash_id.isin(predictions_hashes)]
         attack_detections[k] = {}
 
@@ -69,7 +90,8 @@ def compute_detection_performance(
     scatter_y_true = None
     for seed in range(0, num_seeds):
         prediction_path = os.path.join(prediction_folder, f"split_conf_{conf_id}_detection_results-{split}_seed_{seed}.csv")
-        predictions = pd.read_csv(prediction_path)
+        predictions = pd.read_csv(prediction_path, dtype={'hash_id': 'string', 'prob': 'float64'})
+        predictions = predictions.dropna(subset=['hash_id'])
         predictions['attack'] = ['benign'] * len(predictions)
         predictions['mode'] = ['other'] * len(predictions)
         for k in keys:
@@ -97,6 +119,11 @@ def compute_detection_performance(
         if seed == scatter_seed:
             scatter_scores = preds.copy()
             scatter_y_true = y_true.copy()
+            n_mal = int(scatter_y_true.sum())
+            n_tot = int(scatter_y_true.shape[0])
+            print(
+                f"[scatter_seed={scatter_seed}] malicious edges matched via ground truth: {n_mal}/{n_tot} ({(100.0*n_mal/max(n_tot,1)):.4f}%)"
+            )
 
         fp = (preds_label.astype(bool) & ~y_true.astype(bool)).sum()
         tn = (~preds_label.astype(bool) & ~y_true.astype(bool)).sum()
@@ -151,7 +178,18 @@ def compute_detection_performance(
     benign_sizes = (benign_counts.astype(float) / max_count) * float(scatter_max_marker_size)
     malicious_sizes = (malicious_counts.astype(float) / max_count) * float(scatter_max_marker_size)
 
-    fig, ax = plt.subplots(figsize=(6.4, 4.8 * 1.1))
+    benign_sizes = np.where(
+        benign_counts > 0,
+        np.maximum(benign_sizes, float(scatter_min_marker_size)),
+        0.0,
+    )
+    malicious_sizes = np.where(
+        malicious_counts > 0,
+        np.maximum(malicious_sizes, float(scatter_min_marker_size)),
+        0.0,
+    )
+
+    fig, ax = plt.subplots(figsize=(6.4, 3.6))
     plt.rcParams.update({'font.size': 19})
     ax.set_axisbelow(True)
     ax.scatter(
@@ -223,6 +261,7 @@ if __name__ == "__main__":
     parser.add_argument('--scatter_seed', type=int, default=0)
     parser.add_argument('--scatter_num_bins', type=int, default=200)
     parser.add_argument('--scatter_max_marker_size', type=float, default=80.0)
+    parser.add_argument('--scatter_min_marker_size', type=float, default=6.0)
 
 
     args = parser.parse_args()
