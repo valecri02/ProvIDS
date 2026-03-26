@@ -189,7 +189,7 @@ def compute_detection_performance(
         0.0,
     )
 
-    fig, ax = plt.subplots(figsize=(6.4, 3.6))
+    fig, ax = plt.subplots(figsize=(6.4, 1))
     plt.rcParams.update({'font.size': 19})
     ax.set_axisbelow(True)
     ax.scatter(
@@ -214,7 +214,6 @@ def compute_detection_performance(
     ax.grid(axis='y', alpha=0.25)
     ax.set_xlabel('Anomaly score')
     ax.set_ylabel('Class')
-    ax.legend(loc='best')
     scatter_path = os.path.join(
         save_folder,
         f"scatter_anom_{model_name}_seed_{scatter_seed}.png",
