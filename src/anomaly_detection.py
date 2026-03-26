@@ -1,17 +1,31 @@
-import numpy as np
-import pandas as pd
 import argparse
-import wandb
 import os
+
 import numpy as np
 import pandas as pd
-from pandas import DataFrame
-import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score, average_precision_score
+import wandb
 from matplotlib.pyplot import text
 import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as plt
+from pandas import DataFrame
+from sklearn.metrics import roc_auc_score, average_precision_score
+
+
+def _normalize_hash_ids(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    """Normalize a hash id column to int64, dropping non-parsable rows.
+
+    Ground-truth CSVs sometimes contain ids in non-canonical string formats
+    (e.g., scientific notation). Normalizing to integers makes matching robust.
+    """
+    if col not in df.columns:
+        raise KeyError(f"Missing column: {col}")
+    out = df.copy()
+    s = pd.to_numeric(out[col], errors='coerce')
+    out[col] = s
+    out = out.dropna(subset=[col])
+    out[col] = out[col].astype('int64')
+    return out
 
 
 def compute_detection_performance(
@@ -76,12 +90,12 @@ def compute_detection_performance(
     ap = []
     attack_detections = {}
     prediction_path = os.path.join(prediction_folder, f"split_conf_{conf_id}_detection_results-{split}_seed_0.csv")
-    predictions = pd.read_csv(prediction_path, dtype={'hash_id': 'string', 'prob': 'float64'})
-    predictions = predictions.dropna(subset=['hash_id'])
+    predictions = pd.read_csv(prediction_path, dtype={'prob': 'float64'})
+    predictions = _normalize_hash_ids(predictions, 'hash_id')
     predictions_hashes = set(predictions['hash_id'].tolist())
     for k in attacks_dict:
-        attacks_dict[k] = attacks_dict[k].dropna(subset=['edge_hash_id'])
-        attacks_dict[k] = attacks_dict[k][attacks_dict[k].edge_hash_id.isin(predictions_hashes)]
+        attacks_dict[k] = _normalize_hash_ids(attacks_dict[k], 'edge_hash_id')
+        attacks_dict[k] = attacks_dict[k][attacks_dict[k]['edge_hash_id'].isin(predictions_hashes)]
         attack_detections[k] = {}
 
     preds_total = np.zeros(len(predictions)) 
@@ -90,8 +104,8 @@ def compute_detection_performance(
     scatter_y_true = None
     for seed in range(0, num_seeds):
         prediction_path = os.path.join(prediction_folder, f"split_conf_{conf_id}_detection_results-{split}_seed_{seed}.csv")
-        predictions = pd.read_csv(prediction_path, dtype={'hash_id': 'string', 'prob': 'float64'})
-        predictions = predictions.dropna(subset=['hash_id'])
+        predictions = pd.read_csv(prediction_path, dtype={'prob': 'float64'})
+        predictions = _normalize_hash_ids(predictions, 'hash_id')
         predictions['attack'] = ['benign'] * len(predictions)
         predictions['mode'] = ['other'] * len(predictions)
         for k in keys:
@@ -189,7 +203,7 @@ def compute_detection_performance(
         0.0,
     )
 
-    fig, ax = plt.subplots(figsize=(6.4, 3.6))
+    fig, ax = plt.subplots(figsize=(6.4, 2.8))
     plt.rcParams.update({'font.size': 19})
     ax.set_axisbelow(True)
     ax.scatter(
