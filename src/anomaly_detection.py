@@ -99,9 +99,8 @@ def compute_detection_performance(
         attack_detections[k] = {}
 
     preds_total = np.zeros(len(predictions)) 
-
-    scatter_scores = None
-    scatter_y_true = None
+    preds_all = []
+    y_true_global = None
     for seed in range(0, num_seeds):
         prediction_path = os.path.join(prediction_folder, f"split_conf_{conf_id}_detection_results-{split}_seed_{seed}.csv")
         predictions = pd.read_csv(prediction_path, dtype={'prob': 'float64'})
@@ -130,14 +129,10 @@ def compute_detection_performance(
         y_true = (predictions['attack']!='benign').values.astype(int)
         preds_label = preds.round().astype(int)
 
-        if seed == scatter_seed:
-            scatter_scores = preds.copy()
-            scatter_y_true = y_true.copy()
-            n_mal = int(scatter_y_true.sum())
-            n_tot = int(scatter_y_true.shape[0])
-            print(
-                f"[scatter_seed={scatter_seed}] malicious edges matched via ground truth: {n_mal}/{n_tot} ({(100.0*n_mal/max(n_tot,1)):.4f}%)"
-            )
+        # store per-seed predictions for later multi-run histogram analysis
+        preds_all.append(preds.copy())
+        if y_true_global is None:
+            y_true_global = y_true.copy()
 
         fp = (preds_label.astype(bool) & ~y_true.astype(bool)).sum()
         tn = (~preds_label.astype(bool) & ~y_true.astype(bool)).sum()
@@ -172,89 +167,81 @@ def compute_detection_performance(
         wandb.log({_cm_name : _cm}, step = 0)
         wandb.log({f"roc_curve total": wandb.plot.roc_curve(y_true, np.concatenate((1 - preds_total[:, None], preds_total[:, None]), axis=1), labels=['benign', 'anomaly'])}, step = 0)
         wandb.log({f"pr_curve total": wandb.plot.pr_curve(y_true, np.concatenate((1 - preds_total[:, None], preds_total[:, None]), axis=1), labels=['benign', 'anomaly'])}, step = 0)
-        
 
-    malicious = preds_total[y_true==1]
-    benign = preds_total[y_true==0]
-
-    if scatter_scores is None or scatter_y_true is None:
-        raise ValueError(
-            f"scatter_seed={scatter_seed} not found in evaluated seeds [0, {num_seeds - 1}]"
-        )
-
-    # Binned scatter: group similar scores into bins and show counts per class.
-    scatter_bins = np.linspace(0.0, 1.0, int(scatter_num_bins) + 1)
-    benign_counts, _ = np.histogram(scatter_scores[scatter_y_true == 0], bins=scatter_bins)
-    malicious_counts, _ = np.histogram(scatter_scores[scatter_y_true == 1], bins=scatter_bins)
-    x_centers = (scatter_bins[:-1] + scatter_bins[1:]) / 2.0
-
-    max_count = float(max(benign_counts.max(initial=0), malicious_counts.max(initial=0), 1))
-    benign_sizes = (benign_counts.astype(float) / max_count) * float(scatter_max_marker_size)
-    malicious_sizes = (malicious_counts.astype(float) / max_count) * float(scatter_max_marker_size)
-
-    benign_sizes = np.where(
-        benign_counts > 0,
-        np.maximum(benign_sizes, float(scatter_min_marker_size)),
-        0.0,
-    )
-    malicious_sizes = np.where(
-        malicious_counts > 0,
-        np.maximum(malicious_sizes, float(scatter_min_marker_size)),
-        0.0,
-    )
-
-    fig, ax = plt.subplots(figsize=(6.4, 1))
-    plt.rcParams.update({'font.size': 19})
-    ax.set_axisbelow(True)
-    ax.scatter(
-        x_centers,
-        np.zeros_like(x_centers),
-        s=benign_sizes,
-        alpha=0.8,
-        color='#648fff',
-        label='Benign',
-    )
-    ax.scatter(
-        x_centers,
-        np.ones_like(x_centers),
-        s=malicious_sizes,
-        alpha=0.8,
-        color='#fe6100',
-        label='Malicious',
-    )
-    ax.set_yticks([0, 1], labels=['Benign', 'Malicious'])
-    ax.set_xlim(0, 1)
-    ax.grid(axis='x', alpha=0.25)
-    ax.grid(axis='y', alpha=0.25)
-    ax.set_xlabel('Anomaly score')
-    ax.set_ylabel('Class')
-    scatter_path = os.path.join(
-        save_folder,
-        f"scatter_anom_{model_name}_seed_{scatter_seed}.png",
-    )
-    fig.savefig(scatter_path, bbox_inches='tight', dpi=200)
-    if log_wandb:
-        wandb.log({"scatter_anomaly_score": wandb.Image(fig)}, step=0)
-    plt.close(fig)
-
+    # multi-run histogram: compute per-seed histograms for malicious and benign, then plot mean +/- std
+    if len(preds_all) == 0:
+        raise ValueError("No prediction seeds found to build histogram")
     bins = np.linspace(0, 1, 21)
-    plt.figure(figsize=(6.4,4.8*1.4))
+    bin_centers = (bins[:-1] + bins[1:]) / 2.0
+
+    preds_array = np.stack(preds_all)  # shape: (num_seeds, n_samples)
+    mal_mask = (y_true_global == 1)
+    ben_mask = (y_true_global == 0)
+
+    mal_hist_per_seed = []
+    ben_hist_per_seed = []
+    for s in range(preds_array.shape[0]):
+        mal_scores = preds_array[s][mal_mask]
+        ben_scores = preds_array[s][ben_mask]
+        if mal_scores.size > 0:
+            mal_counts, _ = np.histogram(mal_scores, bins=bins)
+            mal_counts = mal_counts.astype(float) / max(1, mal_scores.size)
+        else:
+            mal_counts = np.zeros(len(bin_centers), dtype=float)
+        if ben_scores.size > 0:
+            ben_counts, _ = np.histogram(ben_scores, bins=bins)
+            ben_counts = ben_counts.astype(float) / max(1, ben_scores.size)
+        else:
+            ben_counts = np.zeros(len(bin_centers), dtype=float)
+        mal_hist_per_seed.append(mal_counts)
+        ben_hist_per_seed.append(ben_counts)
+
+    mal_hist_per_seed = np.vstack(mal_hist_per_seed)
+    ben_hist_per_seed = np.vstack(ben_hist_per_seed)
+
+    mal_mean = mal_hist_per_seed.mean(axis=0)
+    mal_std = mal_hist_per_seed.std(axis=0)
+    ben_mean = ben_hist_per_seed.mean(axis=0)
+    ben_std = ben_hist_per_seed.std(axis=0)
+
+    width = bins[1] - bins[0]
+
+    # 1) Mean-only bar plot
+    fig_mean, ax_mean = plt.subplots(figsize=(6.4,4.8*1.4))
     plt.rcParams.update({'font.size': 19})
     plt.rcParams['axes.axisbelow'] = True
-    plt.hist([malicious, benign], bins, label=['Malicious', 'Benign'], weights=[np.ones(len(malicious))/len(malicious), np.ones(len(benign))/len(benign)], color=['#fe6100', '#648fff'])
-    plt.vlines(x=0.5, ymin=0, ymax=1, colors='black', ls='--', lw=2, label='Threshold')
-    plt.grid(axis='y')
-    plt.ylim(0, 1)
+    ax_mean.bar(bin_centers - width*0.15, mal_mean, width=width*0.3, label='Malicious', color='#fe6100', alpha=0.9)
+    ax_mean.bar(bin_centers + width*0.15, ben_mean, width=width*0.3, label='Benign', color='#648fff', alpha=0.9)
+    ax_mean.grid(axis='y')
+    ax_mean.set_ylim(0, 1)
     step = 0.25
-    plt.xticks(np.arange(0, 1 + step, step))
-    text(0.5, 0.5, " $FPR_{AD}$ : %.1f%% \n $TPR_{AD}$ : %.1f%%"%(np.array(fpr).mean()*100, np.array(tpr).mean()*100), rotation=0, verticalalignment='center')
-    plt.legend(loc='upper right')
-    plt.xlabel("Anomaly score")
-    plt.ylabel("Normalized counts")
-    plt.savefig(os.path.join(save_folder, "hist_anom_%s.pdf"%model_name), bbox_inches='tight')
+    ax_mean.set_xticks(np.arange(0, 1 + step, step))
+    ax_mean.legend(loc='upper right')
+    ax_mean.set_xlabel("Anomaly score")
+    mean_path = os.path.join(save_folder, f"hist_mean_{model_name}.pdf")
+    fig_mean.savefig(mean_path, bbox_inches='tight')
+    plt.close(fig_mean)
 
+    # 2) Histogram with uncertainty bars (mean ± std) as bar plot
+    fig_anom, ax_anom = plt.subplots(figsize=(6.4,4.8*1.4))
+    plt.rcParams.update({'font.size': 19})
+    plt.rcParams['axes.axisbelow'] = True
+    # side-by-side bars with error bars
+    ax_anom.bar(bin_centers - width*0.15, mal_mean, width=width*0.3, yerr=mal_std, label='Malicious', color='#fe6100', alpha=0.9, capsize=3)
+    ax_anom.bar(bin_centers + width*0.15, ben_mean, width=width*0.3, yerr=ben_std, label='Benign', color='#648fff', alpha=0.9, capsize=3)
+    ax_anom.grid(axis='y')
+    ax_anom.set_ylim(0, 1)
+    ax_anom.set_xticks(np.arange(0, 1 + step, step))
+    ax_anom.legend(loc='upper right')
+    ax_anom.set_xlabel("Anomaly score")
+    anom_path = os.path.join(save_folder, f"hist_anom_{model_name}.pdf")
+    fig_anom.savefig(anom_path, bbox_inches='tight')
+    plt.close(fig_anom)
+
+    # Optional wandb logging for both images
     if log_wandb:
-        wandb.log({"threshold": wandb.Image(plt)})
+        wandb.log({"hist_mean": wandb.Image(mean_path)})
+        wandb.log({"hist_anom": wandb.Image(anom_path)})
         run.finish()
     print(model_name, "done")
     
