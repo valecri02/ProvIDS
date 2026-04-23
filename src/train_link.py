@@ -11,6 +11,7 @@ import wandb
 import time
 import ray
 import os
+from tqdm import tqdm
 
 
 def train(data, model, optimizer, train_loader, criterion, neighbor_loader, helper, train_neg_sampler=None, device='cpu', backward=True, static=False, conf=None):
@@ -22,8 +23,10 @@ def train(data, model, optimizer, train_loader, criterion, neighbor_loader, help
     else:
         model.reset_memory()
     neighbor_loader.reset_state()
-
-    for batch in train_loader:
+    
+    pbar = tqdm(train_loader, disable=True)
+    losses = []
+    for batch in pbar:
         t_batch_start = time.time()
         optimizer.zero_grad()
         aux = None
@@ -74,6 +77,9 @@ def train(data, model, optimizer, train_loader, criterion, neighbor_loader, help
         else:
             loss = criterion(pos_out, torch.ones_like(pos_out))
             loss += criterion(neg_out, torch.zeros_like(neg_out))
+        losses.append(loss.item())
+        pbar_strings = f"loss={np.mean(losses):.3f}"
+        pbar.set_description(pbar_strings)
 
         # Update memory and neighbor loader with ground-truth state.
         if int(getattr(model, 'memory_enhancement', 0)) == 2:
@@ -310,9 +316,14 @@ def link_prediction_single(model_instance, conf):
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         optimizer_to(optimizer, device) # Map the optimizer to the current device    
     model.to(device)
+
+    start_time_conf = time.time()
     
     if not conf['inference']:
-        for e in range(best_epoch, conf['epochs']):
+        pbar = tqdm(range(best_epoch, conf['epochs']), disable=True)
+        train_losses = []
+        val_losses = []
+        for e in pbar:
             t0 = time.time()
             if conf['debug']: print('Epoch {:d}:'.format(e))
 
@@ -345,6 +356,14 @@ def link_prediction_single(model_instance, conf):
                 'val': vl_scores
             })
             epoch_times.append(time.time()-t0)
+            
+            train_losses.append(tr_scores['loss'])
+            val_losses.append(vl_scores['loss'])
+            pbar_strings =  f"train_loss={np.mean(train_losses):.3f}"
+            pbar.set_description(pbar_strings)
+            pbar_strings = f"val_loss={np.mean(val_losses):.3f}"
+            pbar.set_description(pbar_strings)
+
             if vl_scores[conf['metric']] > best_score:
                 best_score = vl_scores[conf['metric']]
                 best_epoch = e
@@ -368,6 +387,7 @@ def link_prediction_single(model_instance, conf):
                 print(f'Epoch {e}: {np.mean(epoch_times)} +/- {np.std(epoch_times)} seconds per epoch') 
 
             if e - best_epoch > conf['patience']:
+                print(f'Terminated -- conf {conf["conf_id"]}, seed {conf["seed"]}, time {datetime.timedelta(seconds=time.time() - start_time_conf)}  -- {conf}')
                 break
 
     # Evaluate on test
