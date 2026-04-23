@@ -37,6 +37,7 @@ def compute_detection_performance(
     num_seeds,
     log_wandb,
     save_folder,
+    split=None,
     scatter_seed=0,
     scatter_num_bins=200,
     scatter_max_marker_size=80.0,
@@ -69,7 +70,10 @@ def compute_detection_performance(
         )
         attacks_dict = {"firefox_backdoor":firefox_backdoor, "browser_extension":browser_extension, "pine_phishing_exe":pine_phishing_exe, "trace_thunderbird_phishing_exe":trace_thunderbird_phishing_exe}
     elif dataset == 'theia':
-        split = "0to25"
+        if split is not None:
+            split = str(split)
+        else:
+            split = "0to25"
         firefox_backdoor = pd.read_csv(
             os.path.join(ground_truth_path, "TC3_theia_firefox_backdoor_final_aggregated.csv"),
             dtype={'edge_hash_id': 'string', 'srcnode_hash_id': 'string', 'label': 'string'},
@@ -250,6 +254,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--prediction_folder', required=True)
     parser.add_argument('--ground_truth_path', required=True)
+    parser.add_argument('--split', default=None, help='Optional split identifier to override dataset-derived split (e.g. 10 or 0to25)')
 
     parser.add_argument('--model_name', default="TGN")
     parser.add_argument('--conf_id', default=0)
