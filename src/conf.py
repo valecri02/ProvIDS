@@ -2,13 +2,13 @@ from utils import cartesian_product
 from models import *
 
 
-def get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t):
+def get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=None, num_layers=None, graphsage=False,):
     # Hetero-TGN: 'hetero_gnn' = [True], 'hetero_transformer' = [False]
     # HGT-TGN: 'hetero_gnn' = [True], 'hetero_transformer' = [True]
     # OHD-TGN: 'one_hot_dir' = [True]
     # DIR-TGN: 'dir_GNN' = [True]
     confs = {
-        'aggregator': ['last', 'mean'],
+        'aggregator': ['last'],
         'embedding_dim': [100], #, 200, 64], #32, 64, 128], 
         'time_dim': [100], #32, 64, 128], 
         'lr': [1e-5], #, 0.001],#, 0.0001],
@@ -20,12 +20,17 @@ def get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, 
         'include_features': [True],
         'encode_edge': [True],
         'dir_GNN': [False],
-        'memory':[True],
-        'num_layers':[1, 2, 3],
+        'memory':[False],
+        'num_layers':[2],
         'hetero_transformer':[False],
         'one_hot_dir':[False],
         'run_default_TGN':[True]
     }
+
+    if memory is not None:
+        confs['memory'] = [memory]
+    if num_layers is not None:
+        confs['num_layers'] = [num_layers]
 
     for params in cartesian_product(confs):
         if (params['hetero_gnn'] and params['dir_GNN']):
@@ -134,7 +139,7 @@ def get_GNN_conf(num_nodes, num_relations, node_dim, node_num_embeddings, init_t
             }
 
 
-_tgn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t: get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)
+_tgn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=None, num_layers=None: get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=memory, num_layers=num_layers)
 _basic_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t: get_Basic_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)
 _gnn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t: get_GNN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)
 

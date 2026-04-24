@@ -66,7 +66,6 @@ if __name__ == "__main__":
     parser.add_argument('--overwrite_ckpt', help='Overwrite checkpoint.', action='store_true')
     parser.add_argument('--verbose', help='Every <patience> epochs it prints the average time to compute an epoch.', action='store_true')
     parser.add_argument('--inference', help='Run inference only', action='store_true')
-
     parser.add_argument(
         '--memory_enhancement',
         help='Memory enhancement mode. 0: baseline. 1: warm-start memory from node features. 2: warm-start + update memory using GNN embeddings (detached).',
@@ -74,7 +73,8 @@ if __name__ == "__main__":
         type=int,
         choices=[0, 1, 2],
     )
-
+    parser.add_argument('--memory', help='Enable or disable the TGN memory module', default=None, type=str.lower, choices=['true', 'false'],)
+    parser.add_argument('--num_layers', help='Number of GNN layers to use for TGN.', default=None, type=int,)
     parser.add_argument('--reset_memory_eval', help='Reset memory before every evaluation (val/test).', action='store_true')
     
     
@@ -168,13 +168,34 @@ if __name__ == "__main__":
     # ----------- GET MODEL --------------------
     model_instance, get_conf = MODEL_CONFS[args.model]
 
-    num_conf = len(list(get_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)))
+    if args.model == 'TGN':
+        tgn_overrides = {}
+        if args.memory is not None:
+            tgn_overrides['memory'] = (args.memory == 'true')
+        if args.num_layers is not None:
+            tgn_overrides['num_layers'] = args.num_layers
+
+        conf_iter = get_conf(
+            num_nodes,
+            edge_dim,
+            node_dim,
+            node_num_embeddings,
+            init_time,
+            mean_delta_t,
+            std_delta_t,
+            **tgn_overrides,
+        )
+    else:
+        conf_iter = get_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)
+
+    conf_iter = list(conf_iter)
+    num_conf = len(conf_iter)
     print("N conf", num_conf)
-    print(list(get_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)))
+    print(conf_iter)
     pbar = tqdm.tqdm(total= num_conf*args.num_runs)
     df = []
     ray_ids = []
-    for conf_id, conf in enumerate(get_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)):
+    for conf_id, conf in enumerate(conf_iter):
         for i in range(args.num_runs):
             conf.update({
                 'conf_id': conf_id,

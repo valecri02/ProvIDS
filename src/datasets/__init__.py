@@ -8,7 +8,7 @@ from .darpa import DARPADataset_Temporal, DARPADataset_Static
 
 JODIE = ['Wikipedia', "Reddit", "MOOC", "LastFM"]
 REC_SYS = [] # TODO
-DARPA = ["darpa_trace_0to125", "darpa_trace_126to210", "darpa_trace_116to125", "darpa_trace_0to210", "darpa_theia_0to25", "darpa_theia_20", "darpa_theia_10", "darpa_theia_05", "darpa_theia_01"]
+DARPA = ["darpa_trace_0to125", "darpa_trace_126to210", "darpa_trace_116to125", "darpa_trace_0to210", "darpa_theia_0to25", "darpa_theia_20", "darpa_theia_10", "darpa_theia_05", "darpa_theia_01", "darpa_theia_001"]
 DATA_NAMES = JODIE + REC_SYS + DARPA
 
     
