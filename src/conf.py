@@ -2,7 +2,18 @@ from utils import cartesian_product
 from models import *
 
 
-def get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=None, num_layers=None, graphsage=False,):
+def get_TGN_conf(
+    num_nodes,
+    edge_dim,
+    node_dim,
+    node_num_embeddings,
+    init_time,
+    mean_delta_t,
+    std_delta_t,
+    memory=None,
+    num_layers=None,
+    graphsage=False,
+):
     # Hetero-TGN: 'hetero_gnn' = [True], 'hetero_transformer' = [False]
     # HGT-TGN: 'hetero_gnn' = [True], 'hetero_transformer' = [True]
     # OHD-TGN: 'one_hot_dir' = [True]
@@ -65,7 +76,8 @@ def get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, 
                 'aggregator':params['aggregator'],
                 'hetero_gnn':params['hetero_gnn'],
                 'hetero_transformer': params['hetero_transformer'] if 'hetero_transformer' in params else False,
-                'one_hot_dir': params['one_hot_dir']
+                'one_hot_dir': params['one_hot_dir'],
+                'graphsage': graphsage
             },
             'optim_params':{
                 'lr': params['lr'], 
@@ -139,7 +151,7 @@ def get_GNN_conf(num_nodes, num_relations, node_dim, node_num_embeddings, init_t
             }
 
 
-_tgn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=None, num_layers=None: get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=memory, num_layers=num_layers)
+_tgn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=None, num_layers=None, graphsage=False: get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=memory, num_layers=num_layers, graphsage=graphsage)
 _basic_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t: get_Basic_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)
 _gnn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t: get_GNN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)
 

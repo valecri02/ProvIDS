@@ -318,6 +318,43 @@ class GraphAttentionEmbedding(torch.nn.Module):
         return self.conv(x, edge_index, edge_attr)
 
 
+class EdgeSageEmbedding(MessagePassing):
+    """GraphSAGE-like convolution with edge and temporal features."""
+    def __init__(self, in_channels: int, out_channels: int, msg_dim: int, time_enc: Callable,
+                 mean_delta_t: float = 0., std_delta_t: float = 1.):
+        super().__init__(aggr="mean")  # GraphSAGE = mean aggregation
+        self.mean_delta_t = mean_delta_t
+        self.std_delta_t = std_delta_t
+        self.time_enc = time_enc
+        edge_dim = msg_dim + time_enc.out_channels
+
+        self.W_2 = nn.Linear(in_channels + edge_dim, out_channels)
+        self.W_1 = nn.Linear(in_channels + out_channels, out_channels)
+        self.act = nn.ReLU()
+        self.out_dim = out_channels
+
+    def forward(self, x, last_update, edge_index, t, msg):
+        rel_t = t - last_update[edge_index[0]]
+        rel_t = (rel_t - self.mean_delta_t) / self.std_delta_t
+        rel_t_enc = self.time_enc(rel_t.to(x.dtype))
+
+        edge_attr = torch.cat([rel_t_enc, msg], dim=-1)
+        aggregate = self.propagate(edge_index, x=x, edge_attr=edge_attr)
+        concat = torch.cat([x, aggregate], dim=-1)
+        out = self.act(self.W_1(concat))
+        norm_out = F.normalize(out, p=2, dim=-1)
+        return norm_out
+
+    def message(self, x_j, edge_attr):
+        """
+        x_j:       [num_neighbors, in_channels]
+        edge_attr: [num_neighbors, edge_dim]
+
+        returns:
+        [num_neighbors, out_channel]
+        """
+        return self.W_2(torch.cat([x_j, edge_attr], dim=-1))
+
 class Transformer(torch.nn.Module):
     def __init__(self, in_channels, out_channels, heads=2,
                                     dropout=0.1, edge_dim=0):

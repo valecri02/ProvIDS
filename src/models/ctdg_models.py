@@ -304,6 +304,7 @@ class TGN(GenericModel):
                  log:bool = False,
                  hetero_transformer:bool=False, 
                  one_hot_dir:bool=False,
+                 graphsage: bool = False,
                  memory_enhancement: int = 0
 
         ):
@@ -318,6 +319,10 @@ class TGN(GenericModel):
         
         self.memory_enhancement = int(memory_enhancement)
 
+        use_graphsage = bool(graphsage)
+        if use_graphsage and hetero_gnn:
+            raise ValueError('GraphSAGE is only supported for homogeneous GNNs in this implementation.')
+        
         # Define memory
         if memory:
             memory = GeneralMemory(
@@ -334,9 +339,11 @@ class TGN(GenericModel):
             memory = NoMemory(num_nodes, memory_dim, time_dim, init_time)
 
 
-        # Define GNN
+        # Define GNN    
         gnn = torch.nn.Sequential()
         gnn_act = activation_resolver(gnn_act, **(gnn_act_kwargs or {}))
+        gnn_layer_cls = EdgeSageEmbedding if use_graphsage else GraphAttentionEmbedding
+        layer_out_multiplier = 1 if use_graphsage else 2
         if len(node_embedding_dim) > 0:
             h_prev = memory_dim +  node_embedding_dim[0][1]
         else:
@@ -351,9 +358,9 @@ class TGN(GenericModel):
                                                 mean_delta_t=mean_delta_t, std_delta_t=std_delta_t), data_metadata))"""
                 
             else:
-                gnn.append(GraphAttentionEmbedding(h_prev, h, edge_dim, time_enc=memory.time_enc, 
+                gnn.append(gnn_layer_cls(h_prev, h, edge_dim, time_enc=memory.time_enc, 
                                                 mean_delta_t=mean_delta_t, std_delta_t=std_delta_t))
-            h_prev = h * 2 # We double the input dimension because GraphAttentionEmbedding has 2 concatenated heads
+            h_prev = h * layer_out_multiplier # We double the input dimension because GraphAttentionEmbedding has 2 concatenated heads
 
         if dir_GNN and not hetero_gnn:
             gnn_rev = torch.nn.Sequential()
@@ -364,17 +371,16 @@ class TGN(GenericModel):
                 h_prev = memory_dim +  node_dim
 
             for h in gnn_hidden_dim:
-                gnn_rev.append(GraphAttentionEmbedding(h_prev, h, edge_dim, time_enc=memory.time_enc, 
-                                                    mean_delta_t=mean_delta_t, std_delta_t=std_delta_t))
-                h_prev = h * 2 # We double the input dimension because GraphAttentionEmbedding has 2 concatenated heads
-            atten_module = torch.nn.Linear(gnn_hidden_dim[-1]*2*2, 1)
+                gnn_rev.append(gnn_layer_cls(h_prev, h, edge_dim, time_enc=memory.time_enc,
+                                             mean_delta_t=mean_delta_t, std_delta_t=std_delta_t))
+                h_prev = h * layer_out_multiplier
+            atten_module = torch.nn.Linear(gnn_hidden_dim[-1] * layer_out_multiplier * 2, 1)
         else:
             gnn_rev = None
             atten_module = None
 
         # Define the link predictor
-        # NOTE: We double the input dimension because GraphAttentionEmbedding has 2 concatenated heads
-        link_pred = LinkPredictor(gnn_hidden_dim[-1] * 2, readout_hidden, out_channels=1, include_edge=include_edge, edge_dim=edge_dim)
+        link_pred = LinkPredictor(gnn_hidden_dim[-1] * layer_out_multiplier, readout_hidden, out_channels=1, include_edge=include_edge, edge_dim=edge_dim)
 
         super().__init__(num_nodes, node_embedding_dim, memory, gnn, gnn_act, link_pred, include_features, edge_encoder, gnn_rev, atten_module, one_hot_dir)
         self.num_gnn_layers = len(gnn_hidden_dim)

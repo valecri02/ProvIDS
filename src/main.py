@@ -75,6 +75,9 @@ if __name__ == "__main__":
     )
     parser.add_argument('--memory', help='Enable or disable the TGN memory module', default=None, type=str.lower, choices=['true', 'false'],)
     parser.add_argument('--num_layers', help='Number of GNN layers to use for TGN.', default=None, type=int,)
+
+    parser.add_argument('--graphsage', help='Use GraphSAGE instead of GAT in TGN.', action='store_true',)
+
     parser.add_argument('--reset_memory_eval', help='Reset memory before every evaluation (val/test).', action='store_true')
     
     
@@ -174,6 +177,8 @@ if __name__ == "__main__":
             tgn_overrides['memory'] = (args.memory == 'true')
         if args.num_layers is not None:
             tgn_overrides['num_layers'] = args.num_layers
+        if args.graphsage:
+            tgn_overrides['graphsage'] = True
 
         conf_iter = get_conf(
             num_nodes,
