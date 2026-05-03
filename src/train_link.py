@@ -104,7 +104,7 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
     model.eval()
 
     y_pred_list, y_true_list, y_pred_confidence_list, hash_id_list, malicious_list = [], [], [], [], []
-    node_embeddings_list, node_ids_list = [], []
+    node_embeddings_map = {}
     save_emb = save_embeddings and eval_name in ['train_best', 'val_best', 'test_best']
     
     for batch in loader:
@@ -139,13 +139,30 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
             
             # Check if embeddings are expected but not available
             if save_emb and aux is None:
-                raise RuntimeError(f"Model is expected to return node embeddings (aux) for {eval_name}, but received None. "
-                                   "Ensure the model is returning embeddings in its auxiliary outputs.")
-            
-            # Collect embeddings if requested (aux contains node embeddings for TGN)
-            if save_emb and aux is not None:
-                node_embeddings_list.append(aux.detach().cpu())  # Node embeddings z
-                node_ids_list.append(n_id.detach().cpu())
+                raise RuntimeError(
+                    f"Model is expected to return node embeddings (aux) for {eval_name}, but received None. "
+                    "Ensure the model is returning embeddings in its auxiliary outputs."
+                )
+
+            # Collect embeddings if requested.
+            if save_emb:
+                if not isinstance(aux, dict):
+                    raise RuntimeError(
+                        f"Model is expected to return a dict aux with z_src_gnn/z_dst_gnn for {eval_name}, "
+                        f"but received {type(aux).__name__}."
+                    )
+
+                z_src = aux.get('z_src_gnn', None)
+                z_dst = aux.get('z_dst_gnn', None)
+                if z_src is None or z_dst is None:
+                    raise RuntimeError(
+                        f"Model returned aux dict for {eval_name}, but it does not contain z_src_gnn/z_dst_gnn."
+                    )
+
+                for node_id, emb in zip(src.detach().cpu().tolist(), z_src.detach().cpu()):
+                    node_embeddings_map[int(node_id)] = emb
+                for node_id, emb in zip(pos_dst.detach().cpu().tolist(), z_dst.detach().cpu()):
+                    node_embeddings_map[int(node_id)] = emb
         else:
             t = None
             static_x = None
@@ -201,24 +218,15 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
     true_values = (y_true_list, y_pred_list, y_pred_confidence_list.sigmoid(), hash_id_list) if return_predictions else None
     
     # Save embeddings if collected
-    if save_emb and node_embeddings_list:
+    if save_emb and node_embeddings_map:
         import pandas as pd
-        all_embeddings = torch.cat(node_embeddings_list, dim=0)
-        all_node_ids = torch.cat(node_ids_list, dim=0)
-        
-        # Keep only the last embedding for each node (in case same node appears in multiple batches)
-        node_emb_dict = {}
-        for node_id, emb in zip(all_node_ids.numpy(), all_embeddings):
-            node_emb_dict[int(node_id)] = emb
-        
-        # Create dataframe with node_id and embedding dimensions
-        unique_node_ids = np.array(list(node_emb_dict.keys()))
-        unique_embeddings = np.array(list(node_emb_dict.values()))
-        
+        unique_node_ids = np.array(list(node_embeddings_map.keys()))
+        unique_embeddings = torch.stack(list(node_embeddings_map.values()), dim=0).numpy()
+
         emb_data = {'node_id': unique_node_ids}
         for i in range(unique_embeddings.shape[1]):
             emb_data[f'dim_{i}'] = unique_embeddings[:, i]
-        
+
         emb_df = pd.DataFrame(emb_data)
         emb_path = os.path.join(ckpt_path, f'{eval_name}_node_embeddings.csv')
         emb_df.to_csv(emb_path, index=False)
@@ -238,7 +246,7 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
                                           title=_cm_name)
         wandb.log({_cm_name : _cm}, commit='val' in eval_name or 'test' in eval_name)
         
-    return scores, true_values
+    return scores, true_values, node_embeddings_map if save_emb else None
 
 
 @ray.remote(num_cpus=int(os.environ.get('NUM_CPUS_PER_TASK', 1)), num_gpus=float(os.environ.get('NUM_GPUS_PER_TASK', 0.)))
@@ -474,11 +482,11 @@ def link_prediction_single(model_instance, conf):
             model.reset_memory()
         neighbor_loader.reset_state()
 
-        tr_scores, tr_true_values = eval(data=data, model=model, loader=train_loader, criterion=criterion, 
-                                         neighbor_loader=neighbor_loader, neg_sampler=tmp_train_neg_link_sampler, 
-                                         helper=assoc, eval_seed=conf['exp_seed'], device=device, 
-                                         eval_name='train_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
-                                         static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
+        tr_scores, tr_true_values, tr_embeddings = eval(data=data, model=model, loader=train_loader, criterion=criterion, 
+                                neighbor_loader=neighbor_loader, neg_sampler=tmp_train_neg_link_sampler, 
+                                helper=assoc, eval_seed=conf['exp_seed'], device=device, 
+                                eval_name='train_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
+                                static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
         
         if conf['reset_memory_eval']:
             if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
@@ -486,11 +494,11 @@ def link_prediction_single(model_instance, conf):
             else:
                 model.reset_memory()
 
-        vl_scores, vl_true_values = eval(data=data, model=model, loader=val_loader, criterion=criterion, 
-                                         neighbor_loader=neighbor_loader, neg_sampler=tmp_val_neg_link_sampler, 
-                                         helper=assoc, eval_seed=conf['exp_seed'], device=device, 
-                                         eval_name='val_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
-                                         static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
+        vl_scores, vl_true_values, vl_embeddings = eval(data=data, model=model, loader=val_loader, criterion=criterion, 
+                                neighbor_loader=neighbor_loader, neg_sampler=tmp_val_neg_link_sampler, 
+                                helper=assoc, eval_seed=conf['exp_seed'], device=device, 
+                                eval_name='val_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
+                                static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
         
         if conf['reset_memory_eval']:
             if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
@@ -498,16 +506,19 @@ def link_prediction_single(model_instance, conf):
             else:
                 model.reset_memory()
 
-        ts_scores, ts_true_values = eval(data=data, model=model, loader=test_loader, criterion=criterion, 
-                                         neighbor_loader=neighbor_loader, neg_sampler=tmp_test_neg_link_sampler, 
-                                         helper=assoc, eval_seed=conf['exp_seed'], device=device, 
-                                         eval_name='test_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
-                                         static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
+        ts_scores, ts_true_values, ts_embeddings = eval(data=data, model=model, loader=test_loader, criterion=criterion, 
+                                neighbor_loader=neighbor_loader, neg_sampler=tmp_test_neg_link_sampler, 
+                                helper=assoc, eval_seed=conf['exp_seed'], device=device, 
+                                eval_name='test_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
+                                static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
 
         ckpt['test_score'][strategy] = ts_scores
         ckpt['val_score'][strategy] = vl_scores
         ckpt['train_score'][strategy] = tr_scores
         ckpt['true_values'][strategy] = (tr_true_values, vl_true_values, ts_true_values)
+        if 'embeddings' not in ckpt:
+            ckpt['embeddings'] = {}
+        ckpt['embeddings'][strategy] = (tr_embeddings, vl_embeddings, ts_embeddings)
         ckpt['loss'][strategy] = (tr_scores['loss'], vl_scores['loss'], ts_scores['loss'])
         if 'darpa' in conf['data_name']:
             ts_true_values = ts_true_values[2].squeeze()[ts_true_values[0].bool().squeeze()].numpy(), ts_true_values[3].cpu().squeeze().numpy()

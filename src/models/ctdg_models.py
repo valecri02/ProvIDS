@@ -262,12 +262,10 @@ class GenericModel(torch.nn.Module):
                     #wandb.log({"number of nodes": z.shape[0]})
                     #wandb.log({"gnn time": time.time() - time0})
 
-        aux = None
-        if getattr(self, 'memory_enhancement', 0) == 2:
-            aux = {
-                'z_src_gnn': z[id_mapper[src]],
-                'z_dst_gnn': z[id_mapper[pos_dst]],
-            }
+        aux = {
+            'z_src_gnn': z[id_mapper[src]],
+            'z_dst_gnn': z[id_mapper[pos_dst]],
+        }
         target_message = self.edge_encoder(batch.msg) if self.include_edge else batch.msg
         pos_out = self.link_pred(z[id_mapper[src]], z[id_mapper[pos_dst]], target_message)
         neg_out = self.link_pred(z[id_mapper[src]], z[id_mapper[neg_dst]], target_message) if neg_dst is not None else None
