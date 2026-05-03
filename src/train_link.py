@@ -104,8 +104,9 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
     model.eval()
 
     y_pred_list, y_true_list, y_pred_confidence_list, hash_id_list, malicious_list = [], [], [], [], []
-    node_embeddings_map = {}
+    embeddings_list = []  # Long-format: one row per embedding observation with metadata
     save_emb = save_embeddings and eval_name in ['train_best', 'val_best', 'test_best']
+    batch_idx = 0
     
     for batch in loader:
         aux = None
@@ -144,7 +145,7 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
                     "Ensure the model is returning embeddings in its auxiliary outputs."
                 )
 
-            # Collect embeddings if requested.
+            # Collect embeddings if requested (long-format with metadata).
             if save_emb:
                 if not isinstance(aux, dict):
                     raise RuntimeError(
@@ -153,16 +154,80 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
                     )
 
                 z_src = aux.get('z_src_gnn', None)
-                z_dst = aux.get('z_dst_gnn', None)
-                if z_src is None or z_dst is None:
+                z_dst_pos = aux.get('z_dst_gnn', None)
+                z_dst_neg = aux.get('z_neg_dst_gnn', None)
+                if z_src is None or z_dst_pos is None:
                     raise RuntimeError(
                         f"Model returned aux dict for {eval_name}, but it does not contain z_src_gnn/z_dst_gnn."
                     )
 
-                for node_id, emb in zip(src.detach().cpu().tolist(), z_src.detach().cpu()):
-                    node_embeddings_map[int(node_id)] = emb
-                for node_id, emb in zip(pos_dst.detach().cpu().tolist(), z_dst.detach().cpu()):
-                    node_embeddings_map[int(node_id)] = emb
+                # Extract CPU tensors and values
+                src_list = src.detach().cpu().tolist()
+                pos_dst_list = pos_dst.detach().cpu().tolist()
+                neg_dst_list = neg_dst.detach().cpu().tolist() if neg_dst is not None else []
+                t_list = t.detach().cpu().tolist() if t is not None else [None] * len(src_list)
+                z_src_cpu = z_src.detach().cpu()
+                z_dst_pos_cpu = z_dst_pos.detach().cpu()
+                z_dst_neg_cpu = z_dst_neg.detach().cpu() if z_dst_neg is not None else None
+
+                # Collect positive edge embeddings (src and pos_dst)
+                for event_idx, (src_id, dst_id, t_val) in enumerate(zip(src_list, pos_dst_list, t_list)):
+                    z_src_emb = z_src_cpu[event_idx].numpy()
+                    z_dst_emb = z_dst_pos_cpu[event_idx].numpy()
+                    
+                    # Source node in positive edge
+                    embeddings_list.append({
+                        'split': eval_name,
+                        'batch_idx': batch_idx,
+                        'event_idx': event_idx,
+                        'time': t_val,
+                        'node_id': int(src_id),
+                        'role': 'src',
+                        'edge_label': 'pos',
+                        'embedding': z_src_emb
+                    })
+                    
+                    # Positive destination node
+                    embeddings_list.append({
+                        'split': eval_name,
+                        'batch_idx': batch_idx,
+                        'event_idx': event_idx,
+                        'time': t_val,
+                        'node_id': int(dst_id),
+                        'role': 'pos_dst',
+                        'edge_label': 'pos',
+                        'embedding': z_dst_emb
+                    })
+
+                # Collect negative edge embeddings (src and neg_dst) if available
+                if z_dst_neg_cpu is not None and len(neg_dst_list) > 0:
+                    for event_idx, (src_id, neg_id, t_val) in enumerate(zip(src_list, neg_dst_list, t_list)):
+                        z_src_emb = z_src_cpu[event_idx].numpy()
+                        z_neg_emb = z_dst_neg_cpu[event_idx].numpy()
+                        
+                        # Source node in negative edge
+                        embeddings_list.append({
+                            'split': eval_name,
+                            'batch_idx': batch_idx,
+                            'event_idx': event_idx,
+                            'time': t_val,
+                            'node_id': int(src_id),
+                            'role': 'src',
+                            'edge_label': 'neg',
+                            'embedding': z_src_emb
+                        })
+                        
+                        # Negative destination node
+                        embeddings_list.append({
+                            'split': eval_name,
+                            'batch_idx': batch_idx,
+                            'event_idx': event_idx,
+                            'time': t_val,
+                            'node_id': int(neg_id),
+                            'role': 'neg_dst',
+                            'edge_label': 'neg',
+                            'embedding': z_neg_emb
+                        })
         else:
             t = None
             static_x = None
@@ -198,6 +263,8 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
         else:
             model.update(src, pos_dst, t, msg, static_x)
         neighbor_loader.insert(src.cpu(), pos_dst.cpu())
+        
+        batch_idx += 1
 
     t1 = time.time()
 
@@ -217,20 +284,28 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
 
     true_values = (y_true_list, y_pred_list, y_pred_confidence_list.sigmoid(), hash_id_list) if return_predictions else None
     
-    # Save embeddings if collected
-    if save_emb and node_embeddings_map:
+    # Save embeddings if collected (long-format with metadata)
+    if save_emb and embeddings_list:
         import pandas as pd
-        unique_node_ids = np.array(list(node_embeddings_map.keys()))
-        unique_embeddings = torch.stack(list(node_embeddings_map.values()), dim=0).numpy()
-
-        emb_data = {'node_id': unique_node_ids}
-        for i in range(unique_embeddings.shape[1]):
-            emb_data[f'dim_{i}'] = unique_embeddings[:, i]
-
-        emb_df = pd.DataFrame(emb_data)
+        # Convert embedding arrays to separate dim columns
+        emb_df_data = []
+        for row in embeddings_list:
+            row_data = {k: v for k, v in row.items() if k != 'embedding'}
+            embedding = row['embedding']
+            for dim_idx, val in enumerate(embedding):
+                row_data[f'dim_{dim_idx}'] = val
+            emb_df_data.append(row_data)
+        
+        emb_df = pd.DataFrame(emb_df_data)
         emb_path = os.path.join(ckpt_path, f'{eval_name}_node_embeddings.csv')
+        # Append to existing file if it exists, otherwise create new
+        if os.path.exists(emb_path):
+            existing_df = pd.read_csv(emb_path)
+            emb_df = pd.concat([existing_df, emb_df], ignore_index=True)
         emb_df.to_csv(emb_path, index=False)
-        print(f'Saved {eval_name} embeddings to {emb_path} ({len(unique_node_ids)} unique nodes)')
+        num_rows = len(emb_df)
+        num_unique_nodes = emb_df['node_id'].nunique()
+        print(f'Saved {eval_name} embeddings to {emb_path} ({num_rows} observations, {num_unique_nodes} unique nodes)')
     
     if wandb_log:
         for k, v in scores.items():
@@ -246,7 +321,7 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
                                           title=_cm_name)
         wandb.log({_cm_name : _cm}, commit='val' in eval_name or 'test' in eval_name)
         
-    return scores, true_values, node_embeddings_map if save_emb else None
+    return scores, true_values, embeddings_list if save_emb else None
 
 
 @ray.remote(num_cpus=int(os.environ.get('NUM_CPUS_PER_TASK', 1)), num_gpus=float(os.environ.get('NUM_GPUS_PER_TASK', 0.)))

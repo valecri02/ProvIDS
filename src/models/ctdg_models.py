@@ -266,6 +266,9 @@ class GenericModel(torch.nn.Module):
             'z_src_gnn': z[id_mapper[src]],
             'z_dst_gnn': z[id_mapper[pos_dst]],
         }
+        # Include negative destination embeddings if neg_dst exists
+        if neg_dst is not None:
+            aux['z_neg_dst_gnn'] = z[id_mapper[neg_dst]]
         target_message = self.edge_encoder(batch.msg) if self.include_edge else batch.msg
         pos_out = self.link_pred(z[id_mapper[src]], z[id_mapper[pos_dst]], target_message)
         neg_out = self.link_pred(z[id_mapper[src]], z[id_mapper[neg_dst]], target_message) if neg_dst is not None else None
