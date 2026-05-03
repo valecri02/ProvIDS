@@ -99,11 +99,14 @@ def train(data, model, optimizer, train_loader, criterion, neighbor_loader, help
 
 @torch.no_grad()
 def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=None, eval_seed=12345,
-         return_predictions=False, device='cpu', eval_name='eval', wandb_log=False, static=False):
+         return_predictions=False, device='cpu', eval_name='eval', wandb_log=False, static=False, save_embeddings=False, ckpt_path=None):
     t0 = time.time()
     model.eval()
 
     y_pred_list, y_true_list, y_pred_confidence_list, hash_id_list, malicious_list = [], [], [], [], []
+    node_embeddings_list, node_ids_list = [], []
+    save_emb = save_embeddings and eval_name in ['train_best', 'val_best', 'test_best']
+    
     for batch in loader:
         aux = None
         if not static:
@@ -133,6 +136,16 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
                                     edge_index=edge_index, id_mapper=helper, src_indic=src_indic)
             pos_out, neg_out, *rest = _out
             aux = rest[0] if len(rest) > 0 else None
+            
+            # Check if embeddings are expected but not available
+            if save_emb and aux is None:
+                raise RuntimeError(f"Model is expected to return node embeddings (aux) for {eval_name}, but received None. "
+                                   "Ensure the model is returning embeddings in its auxiliary outputs.")
+            
+            # Collect embeddings if requested (aux contains node embeddings for TGN)
+            if save_emb and aux is not None:
+                node_embeddings_list.append(aux.detach().cpu())  # Node embeddings z
+                node_ids_list.append(n_id.detach().cpu())
         else:
             t = None
             static_x = None
@@ -186,6 +199,31 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
     scores['time'] = datetime.timedelta(seconds=t1 - t0)
 
     true_values = (y_true_list, y_pred_list, y_pred_confidence_list.sigmoid(), hash_id_list) if return_predictions else None
+    
+    # Save embeddings if collected
+    if save_emb and node_embeddings_list:
+        import pandas as pd
+        all_embeddings = torch.cat(node_embeddings_list, dim=0)
+        all_node_ids = torch.cat(node_ids_list, dim=0)
+        
+        # Keep only the last embedding for each node (in case same node appears in multiple batches)
+        node_emb_dict = {}
+        for node_id, emb in zip(all_node_ids.numpy(), all_embeddings):
+            node_emb_dict[int(node_id)] = emb
+        
+        # Create dataframe with node_id and embedding dimensions
+        unique_node_ids = np.array(list(node_emb_dict.keys()))
+        unique_embeddings = np.array(list(node_emb_dict.values()))
+        
+        emb_data = {'node_id': unique_node_ids}
+        for i in range(unique_embeddings.shape[1]):
+            emb_data[f'dim_{i}'] = unique_embeddings[:, i]
+        
+        emb_df = pd.DataFrame(emb_data)
+        emb_path = os.path.join(ckpt_path, f'{eval_name}_node_embeddings.csv')
+        emb_df.to_csv(emb_path, index=False)
+        print(f'Saved {eval_name} embeddings to {emb_path} ({len(unique_node_ids)} unique nodes)')
+    
     if wandb_log:
         for k, v in scores.items():
             if  k == 'confusion_matrix':
@@ -439,7 +477,8 @@ def link_prediction_single(model_instance, conf):
         tr_scores, tr_true_values = eval(data=data, model=model, loader=train_loader, criterion=criterion, 
                                          neighbor_loader=neighbor_loader, neg_sampler=tmp_train_neg_link_sampler, 
                                          helper=assoc, eval_seed=conf['exp_seed'], device=device, 
-                                         eval_name='train_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], static='static' in conf['version'])
+                                         eval_name='train_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
+                                         static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
         
         if conf['reset_memory_eval']:
             if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
@@ -450,7 +489,8 @@ def link_prediction_single(model_instance, conf):
         vl_scores, vl_true_values = eval(data=data, model=model, loader=val_loader, criterion=criterion, 
                                          neighbor_loader=neighbor_loader, neg_sampler=tmp_val_neg_link_sampler, 
                                          helper=assoc, eval_seed=conf['exp_seed'], device=device, 
-                                         eval_name='val_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], static='static' in conf['version'])
+                                         eval_name='val_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
+                                         static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
         
         if conf['reset_memory_eval']:
             if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
@@ -461,7 +501,8 @@ def link_prediction_single(model_instance, conf):
         ts_scores, ts_true_values = eval(data=data, model=model, loader=test_loader, criterion=criterion, 
                                          neighbor_loader=neighbor_loader, neg_sampler=tmp_test_neg_link_sampler, 
                                          helper=assoc, eval_seed=conf['exp_seed'], device=device, 
-                                         eval_name='test_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], static='static' in conf['version'])
+                                         eval_name='test_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
+                                         static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
 
         ckpt['test_score'][strategy] = ts_scores
         ckpt['val_score'][strategy] = vl_scores
