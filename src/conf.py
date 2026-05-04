@@ -63,7 +63,7 @@ def get_TGN_conf(
                 'memory': params['memory'],
                 'memory_dim': params['embedding_dim'],
                 'time_dim': params['time_dim'],
-                'gnn_hidden_dim': [params['embedding_dim'] // 2]*params['num_layers'],
+                'gnn_hidden_dim': [params['embedding_dim'] if graphsage else params['embedding_dim'] // 2]*params['num_layers'],
                 'gnn_act': params['gnn_act'],
                 'readout_hidden': max(1, params['embedding_dim']),
                 'mean_delta_t': mean_delta_t,
