@@ -237,6 +237,8 @@ def compute_state_metrics(
     state_name: str,
     state_df: pd.DataFrame,
     source_files: list[str],
+    model_name: str,
+    num_layers: int,
 ):
     """Compute cosine and event-level Dirichlet energy for one cumulative state."""
     latest_df = latest_unique_embeddings(state_df)
@@ -248,6 +250,8 @@ def compute_state_metrics(
     energy_stats = compute_temporal_dirichlet_energy(state_df)
 
     return {
+        "model_name": model_name,
+        "num_layers": int(num_layers),
         "state": state_name,
         "embedding_csvs": " + ".join(source_files),
         "num_observations": int(len(state_df)),
@@ -307,6 +311,19 @@ def main():
         help="Summary CSV to append results to.",
     )
 
+    parser.add_argument(
+        "--model-name",
+        required=True,
+        help="Model name to store in the output CSV.",
+    )
+
+    parser.add_argument(
+        "--num-layers",
+        required=True,
+        type=int,
+        help="Number of layers to store in the output CSV.",
+    )
+
     args = parser.parse_args()
 
     train_df, train_path = read_embedding_csv(args.train_emb_csv, "train_best")
@@ -322,16 +339,22 @@ def main():
             state_name="train",
             state_df=train_state_df,
             source_files=[train_path],
+            model_name=args.model_name,
+            num_layers=args.num_layers,
         ),
         compute_state_metrics(
             state_name="val",
             state_df=val_state_df,
             source_files=[train_path, val_path],
+            model_name=args.model_name,
+            num_layers=args.num_layers,
         ),
         compute_state_metrics(
             state_name="test",
             state_df=test_state_df,
             source_files=[train_path, val_path, test_path],
+            model_name=args.model_name,
+            num_layers=args.num_layers,
         ),
     ]
 
