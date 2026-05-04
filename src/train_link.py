@@ -321,7 +321,7 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
                                           title=_cm_name)
         wandb.log({_cm_name : _cm}, commit='val' in eval_name or 'test' in eval_name)
         
-    return scores, true_values, embeddings_list if save_emb else None
+    return scores, true_values, (embeddings_list if save_emb else None)
 
 
 @ray.remote(num_cpus=int(os.environ.get('NUM_CPUS_PER_TASK', 1)), num_gpus=float(os.environ.get('NUM_GPUS_PER_TASK', 0.)))
@@ -458,7 +458,7 @@ def link_prediction_single(model_instance, conf):
                 model.reset_memory()
             neighbor_loader.reset_state()
 
-            tr_scores, _ = eval(data=data, model=model, loader=train_loader, criterion=criterion, 
+            tr_scores, _, _ = eval(data=data, model=model, loader=train_loader, criterion=criterion, 
                                 neighbor_loader=neighbor_loader, neg_sampler=train_neg_link_sampler, helper=assoc, 
                                 eval_seed=conf['exp_seed'], device=device, eval_name='train', wandb_log=conf['wandb'], static='static' in conf['version'])
             
@@ -468,7 +468,7 @@ def link_prediction_single(model_instance, conf):
                 else:
                     model.reset_memory()
 
-            vl_scores, vl_true_values = eval(data=data, model=model, loader=val_loader, criterion=criterion, 
+            vl_scores, vl_true_values, _ = eval(data=data, model=model, loader=val_loader, criterion=criterion, 
                                             neighbor_loader=neighbor_loader, neg_sampler=val_neg_link_sampler, 
                                             helper=assoc, eval_seed=conf['exp_seed'], device=device,
                                             eval_name='val', wandb_log=conf['wandb'], static='static' in conf['version'])
@@ -591,9 +591,10 @@ def link_prediction_single(model_instance, conf):
         ckpt['val_score'][strategy] = vl_scores
         ckpt['train_score'][strategy] = tr_scores
         ckpt['true_values'][strategy] = (tr_true_values, vl_true_values, ts_true_values)
-        if 'embeddings' not in ckpt:
-            ckpt['embeddings'] = {}
-        ckpt['embeddings'][strategy] = (tr_embeddings, vl_embeddings, ts_embeddings)
+        if any(x is not None for x in (tr_embeddings, vl_embeddings, ts_embeddings)):
+            if 'embeddings' not in ckpt:
+                ckpt['embeddings'] = {}
+            ckpt['embeddings'][strategy] = (tr_embeddings, vl_embeddings, ts_embeddings)
         ckpt['loss'][strategy] = (tr_scores['loss'], vl_scores['loss'], ts_scores['loss'])
         if 'darpa' in conf['data_name']:
             ts_true_values = ts_true_values[2].squeeze()[ts_true_values[0].bool().squeeze()].numpy(), ts_true_values[3].cpu().squeeze().numpy()
