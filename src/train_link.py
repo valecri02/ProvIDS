@@ -561,7 +561,7 @@ def link_prediction_single(model_instance, conf):
                                 neighbor_loader=neighbor_loader, neg_sampler=tmp_train_neg_link_sampler, 
                                 helper=assoc, eval_seed=conf['exp_seed'], device=device, 
                                 eval_name='train_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
-                                static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
+                                static='static' in conf['version'], save_embeddings=conf.get('save_embeddings', False), ckpt_path=conf['ckpt_path'])
         
         if conf['reset_memory_eval']:
             if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
@@ -573,7 +573,7 @@ def link_prediction_single(model_instance, conf):
                                 neighbor_loader=neighbor_loader, neg_sampler=tmp_val_neg_link_sampler, 
                                 helper=assoc, eval_seed=conf['exp_seed'], device=device, 
                                 eval_name='val_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
-                                static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
+                                static='static' in conf['version'], save_embeddings=conf.get('save_embeddings', False), ckpt_path=conf['ckpt_path'])
         
         if conf['reset_memory_eval']:
             if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
@@ -585,7 +585,7 @@ def link_prediction_single(model_instance, conf):
                                 neighbor_loader=neighbor_loader, neg_sampler=tmp_test_neg_link_sampler, 
                                 helper=assoc, eval_seed=conf['exp_seed'], device=device, 
                                 eval_name='test_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
-                                static='static' in conf['version'], save_embeddings=True, ckpt_path=conf['ckpt_path'])
+                                static='static' in conf['version'], save_embeddings=conf.get('save_embeddings', False), ckpt_path=conf['ckpt_path'])
 
         ckpt['test_score'][strategy] = ts_scores
         ckpt['val_score'][strategy] = vl_scores

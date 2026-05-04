@@ -79,6 +79,7 @@ if __name__ == "__main__":
     parser.add_argument('--graphsage', help='Use GraphSAGE instead of GAT in TGN.', action='store_true',)
 
     parser.add_argument('--reset_memory_eval', help='Reset memory before every evaluation (val/test).', action='store_true')
+    parser.add_argument('--save_embeddings', help='Save node embeddings during final evaluation (train_best, val_best, test_best).', action='store_true')
     
     
     args = parser.parse_args()
