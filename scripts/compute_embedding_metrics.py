@@ -35,11 +35,13 @@ and edge_label is one of:
 
 Usage:
 
-  python compute_embedding_metrics.py \
-    --train-emb-csv train_best_node_embeddings.csv \
-    --val-emb-csv val_best_node_embeddings.csv \
-    --test-emb-csv test_best_node_embeddings.csv \
-    --csv-out node_similarity_stats.csv
+python /work3/s253892/ProvIDS/scripts/compute_embedding_metrics.py \
+    --train-emb-csv ./train_best_node_embeddings.csv \
+    --val-emb-csv ./val_best_node_embeddings.csv \
+    --test-emb-csv ./test_best_node_embeddings.csv \
+    --csv-out /work3/s253892/ProvIDS/final_experiments/oversquashing_ablation/node_similarity_stats.csv \
+    --model-name \
+    --num-layers
 """
 
 import argparse
