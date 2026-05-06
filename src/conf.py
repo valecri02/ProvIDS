@@ -13,6 +13,8 @@ def get_TGN_conf(
     memory=None,
     num_layers=None,
     graphsage=False,
+    use_mlstm=False,
+    mlstm_num_heads=4,
 ):
     # Hetero-TGN: 'hetero_gnn' = [True], 'hetero_transformer' = [False]
     # HGT-TGN: 'hetero_gnn' = [True], 'hetero_transformer' = [True]
@@ -77,7 +79,9 @@ def get_TGN_conf(
                 'hetero_gnn':params['hetero_gnn'],
                 'hetero_transformer': params['hetero_transformer'] if 'hetero_transformer' in params else False,
                 'one_hot_dir': params['one_hot_dir'],
-                'graphsage': graphsage
+                'graphsage': graphsage,
+                'use_mlstm': use_mlstm,
+                'mlstm_num_heads': mlstm_num_heads,
             },
             'optim_params':{
                 'lr': params['lr'], 
@@ -151,7 +155,7 @@ def get_GNN_conf(num_nodes, num_relations, node_dim, node_num_embeddings, init_t
             }
 
 
-_tgn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=None, num_layers=None, graphsage=False: get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=memory, num_layers=num_layers, graphsage=graphsage)
+_tgn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=None, num_layers=None, graphsage=False, use_mlstm=False, mlstm_num_heads=4: get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=memory, num_layers=num_layers, graphsage=graphsage, use_mlstm=use_mlstm, mlstm_num_heads=mlstm_num_heads)
 _basic_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t: get_Basic_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)
 _gnn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t: get_GNN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)
 

@@ -11,6 +11,66 @@ TGNMessageStoreType = Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, 
 TGNMessageStoreWithZType = Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
 
 
+class mLSTMMemoryAdapter(torch.nn.Module):
+    """Adapter wrapping mLSTMLayer.step for single-step node memory updates.
+    
+    Transforms (aggregated_msg, prev_memory) into mLSTMLayer.step format
+    and returns updated memory and internal mLSTM state (c, n, m).
+    """
+    def __init__(self, message_dim: int, memory_dim: int, num_heads: int = 4,
+                 context_length: int = 64, conv1d_kernel_size: int = 4):
+        super().__init__()
+        from .mlstm import mLSTMLayer, mLSTMLayerConfig
+        
+        self.memory_dim = memory_dim
+        self.message_dim = message_dim
+        self.input_proj = torch.nn.Linear(message_dim, memory_dim)
+        
+        config = mLSTMLayerConfig(
+            embedding_dim=memory_dim,
+            num_heads=num_heads,
+            context_length=context_length,
+            conv1d_kernel_size=conv1d_kernel_size,
+            bias=False,
+            dropout=0.0,
+        )
+        self.mlstm_layer = mLSTMLayer(config)
+        
+    def forward(self, aggregated_msg: Tensor, prev_memory: Tensor,
+                mlstm_state: Optional[Tuple[Tensor, Tensor, Tensor]] = None) -> Tuple[Tensor, Tuple[Tensor, Tensor, Tensor]]:
+        """
+        Args:
+            aggregated_msg: [batch_size, message_dim] aggregated messages per node
+            prev_memory: [batch_size, memory_dim] previous node memory
+            mlstm_state: optional (c_state, n_state, m_state) tuple for recurrent use
+            
+        Returns:
+            new_memory: [batch_size, memory_dim] updated node memory
+            mlstm_state: (c_state, n_state, m_state) updated internal state
+        """
+        # Project aggregated messages to the mLSTM embedding size.
+        x = self.input_proj(aggregated_msg).unsqueeze(1)
+        
+        # Call mLSTMLayer.step with optional state
+        output, state_dict = self.mlstm_layer.step(
+            x, 
+            mlstm_state=mlstm_state,
+            conv_state=None
+        )
+        
+        # Squeeze sequence dimension: [batch_size, 1, memory_dim] -> [batch_size, memory_dim]
+        new_memory = output.squeeze(1)
+        
+        # Extract mLSTM cell state
+        mlstm_state_new = state_dict.get('mlstm_state', None)
+        
+        return new_memory, mlstm_state_new
+
+    def reset_parameters(self):
+        self.input_proj.reset_parameters()
+        self.mlstm_layer.reset_parameters()
+
+
 class IdentityLayer(torch.nn.Module):
     # NOTE: this object is used to implement those models that do not have a RNN-based memory
     def __init__(self):
@@ -57,19 +117,38 @@ class GeneralMemory(TGNMemory):
                  rnn: Optional[str] = None,
                  non_linearity: str = 'tanh',
                  init_time: int = 0,
-                 message_batch: int = 200):
+                 message_batch: int = 200,
+                 use_mlstm: bool = False,
+                 mlstm_num_heads: int = 4):
         
         super().__init__(num_nodes, raw_msg_dim, memory_dim, time_dim, message_module, aggregator_module)
 
         self.message_batch = message_batch
-        if rnn is None:
-             self.gru = IdentityLayer()
+        self.use_mlstm = use_mlstm
+        self.mlstm_num_heads = mlstm_num_heads
+        
+        # Initialize memory update module (GRU or mLSTM)
+        if use_mlstm:
+            self.gru = mLSTMMemoryAdapter(
+                message_dim=message_module.out_channels,
+                memory_dim=memory_dim,
+                num_heads=mlstm_num_heads,
+                context_length=64,
+                conv1d_kernel_size=4
+            )
+            # Per-node mLSTM state buffers (lazily initialized on first update)
+            self._mlstm_c_state: Optional[Tensor] = None
+            self._mlstm_n_state: Optional[Tensor] = None
+            self._mlstm_m_state: Optional[Tensor] = None
         else:
-            rnn_instance = getattr(torch.nn, rnn)
-            if 'RNN' in rnn:
-                self.gru = rnn_instance(message_module.out_channels, memory_dim, nonlinearity=non_linearity)
+            if rnn is None:
+                self.gru = IdentityLayer()
             else:
-                self.gru = rnn_instance(message_module.out_channels, memory_dim)
+                rnn_instance = getattr(torch.nn, rnn)
+                if 'RNN' in rnn:
+                    self.gru = rnn_instance(message_module.out_channels, memory_dim, nonlinearity=non_linearity)
+                else:
+                    self.gru = rnn_instance(message_module.out_channels, memory_dim)
 
         self.memory[:] = torch.zeros(num_nodes, memory_dim).type_as(self.memory)
         self.last_update[:] = torch.ones(num_nodes).type_as(self.last_update) * init_time
@@ -91,9 +170,52 @@ class GeneralMemory(TGNMemory):
         self.msg_s_store_z: TGNMessageStoreWithZType = {j: (i, i, i, msg, z, z) for j in range(self.num_nodes)}
         self.msg_d_store_z: TGNMessageStoreWithZType = {j: (i, i, i, msg, z, z) for j in range(self.num_nodes)}
 
+    def _init_mlstm_states(self, device: torch.device, dtype: torch.dtype):
+        """Lazily initialize per-node mLSTM states with zeros."""
+        if self._mlstm_c_state is None and self.use_mlstm:
+            NH = self.mlstm_num_heads
+            DH = self.memory.size(-1) // NH
+            
+            self._mlstm_c_state = torch.zeros(
+                self.num_nodes, NH, DH, DH, device=device, dtype=dtype
+            )
+            self._mlstm_n_state = torch.zeros(
+                self.num_nodes, NH, DH, 1, device=device, dtype=dtype
+            )
+            self._mlstm_m_state = torch.zeros(
+                self.num_nodes, NH, 1, 1, device=device, dtype=dtype
+            )
+    
+    def _get_mlstm_state(self, n_id: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+        """Get mLSTM states for specific nodes."""
+        if self._mlstm_c_state is None:
+            self._init_mlstm_states(self.memory.device, self.memory.dtype)
+        
+        c_state = self._mlstm_c_state[n_id]
+        n_state = self._mlstm_n_state[n_id]
+        m_state = self._mlstm_m_state[n_id]
+        
+        return c_state, n_state, m_state
+    
+    def _set_mlstm_state(self, n_id: Tensor, state: Tuple[Tensor, Tensor, Tensor]):
+        """Store updated mLSTM states for specific nodes."""
+        c_state, n_state, m_state = state
+        self._mlstm_c_state[n_id] = c_state
+        self._mlstm_n_state[n_id] = n_state
+        self._mlstm_m_state[n_id] = m_state
+    
+    def reset_mlstm_states(self):
+        """Reset all mLSTM states to zeros."""
+        if self.use_mlstm and self._mlstm_c_state is not None:
+            self._mlstm_c_state.zero_()
+            self._mlstm_n_state.zero_()
+            self._mlstm_m_state.zero_()
+
     def reset_state(self):
         super().reset_state()
         self._reset_message_store_z()
+        if self.use_mlstm:
+            self.reset_mlstm_states()
 
     def _update_msg_store_z(self, src: Tensor, dst: Tensor, t: Tensor,
                             raw_msg: Tensor, z_src: Tensor, z_dst: Tensor,
@@ -129,28 +251,32 @@ class GeneralMemory(TGNMemory):
         return msg, t, src, dst
 
     def _get_updated_memory(self, n_id: Tensor):
-        if getattr(self, '_store_mode', 'base') != 'z':
-            return super()._get_updated_memory(n_id)
-
         self._assoc[n_id] = torch.arange(n_id.size(0), device=n_id.device)
-
-        # Compute messages (src -> dst) using stored GNN embeddings.
-        msg_s, t_s, src_s, dst_s = self._compute_msg_z(n_id, self.msg_s_store_z,
-                                                       self.msg_s_module)
-        # Compute messages (dst -> src) using stored GNN embeddings.
-        msg_d, t_d, src_d, dst_d = self._compute_msg_z(n_id, self.msg_d_store_z,
-                                                       self.msg_d_module)
-
+        
+        if getattr(self, '_store_mode', 'base') == 'z':
+            # z mode: use stored GNN embeddings
+            msg_s, t_s, src_s, dst_s = self._compute_msg_z(n_id, self.msg_s_store_z, self.msg_s_module)
+            msg_d, t_d, src_d, dst_d = self._compute_msg_z(n_id, self.msg_d_store_z, self.msg_d_module)
+        else:
+            # base mode: use internal message stores
+            msg_s, t_s, src_s, dst_s = self._compute_msg(n_id, self.msg_s_store, self.msg_s_module)
+            msg_d, t_d, src_d, dst_d = self._compute_msg(n_id, self.msg_d_store, self.msg_d_module)
+        
         # Aggregate messages.
         idx = torch.cat([src_s, src_d], dim=0)
         msg = torch.cat([msg_s, msg_d], dim=0)
         t = torch.cat([t_s, t_d], dim=0)
         aggr = self.aggr_module(msg, self._assoc[idx], t, n_id.size(0))
 
-        # Get local copy of updated memory.
-        memory = self.gru(aggr, self.memory[n_id])
+        # Update memory: mLSTM or GRU
+        if self.use_mlstm:
+            mlstm_state = self._get_mlstm_state(n_id)
+            memory, mlstm_state_new = self.gru(aggr, self.memory[n_id], mlstm_state)
+            self._set_mlstm_state(n_id, mlstm_state_new)
+        else:
+            memory = self.gru(aggr, self.memory[n_id])
 
-        # Get local copy of updated `last_update`.
+        # Get last updates.
         dim_size = self.last_update.size(0)
         last_update = scatter(t, idx, 0, dim_size, reduce='max')[n_id]
 

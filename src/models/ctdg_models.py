@@ -306,10 +306,10 @@ class TGN(GenericModel):
                  hetero_transformer:bool=False, 
                  one_hot_dir:bool=False,
                  graphsage: bool = False,
-                 memory_enhancement: int = 0
-
-        ):
-
+                 memory_enhancement: int = 0,
+                 use_mlstm: bool = False,
+                 mlstm_num_heads: int = 4
+    ):
         edge_encoder = torch.nn.Linear(edge_dim, edge_dim) if encode_edge or include_edge else None
 
         if aggregator == 'rnn':
@@ -334,7 +334,9 @@ class TGN(GenericModel):
                 message_module=IdentityMessage(edge_dim, memory_dim, time_dim, edge_encoder if encode_edge else None),
                 aggregator_module=aggregator_module,
                 rnn='GRUCell',
-                init_time=init_time
+                init_time=init_time,
+                use_mlstm=use_mlstm,
+                mlstm_num_heads=mlstm_num_heads
             )
         else:
             memory = NoMemory(num_nodes, memory_dim, time_dim, init_time)
