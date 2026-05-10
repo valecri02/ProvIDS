@@ -77,6 +77,8 @@ if __name__ == "__main__":
     parser.add_argument('--num_layers', help='Number of GNN layers to use for TGN.', default=None, type=int,)
 
     parser.add_argument('--graphsage', help='Use GraphSAGE instead of GAT in TGN.', action='store_true',)
+    parser.add_argument('--use_mlstm', help='Use mLSTM instead of GRU for TGN memory updates.', action='store_true')
+    parser.add_argument('--mlstm_num_heads', help='Number of heads to use for mLSTM memory updates.', default=4, type=int)
 
     parser.add_argument('--reset_memory_eval', help='Reset memory before every evaluation (val/test).', action='store_true')
     parser.add_argument('--save_embeddings', help='Save node embeddings during final evaluation (train_best, val_best, test_best).', action='store_true')
@@ -180,6 +182,10 @@ if __name__ == "__main__":
             tgn_overrides['num_layers'] = args.num_layers
         if args.graphsage:
             tgn_overrides['graphsage'] = True
+        if args.use_mlstm:
+            tgn_overrides['use_mlstm'] = True
+        if args.mlstm_num_heads is not None:
+            tgn_overrides['mlstm_num_heads'] = args.mlstm_num_heads
 
         conf_iter = get_conf(
             num_nodes,

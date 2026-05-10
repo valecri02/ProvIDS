@@ -1,24 +1,30 @@
 import torch
-from typing import Callable, Optional, Dict, Tuple
+import os
+from typing import Callable, Optional, Dict, Tuple, Set
 from torch_geometric.nn import TransformerConv
 from torch_geometric.nn.inits import zeros
 from torch_geometric.nn import TGNMemory 
 from torch import Tensor
 from torch_geometric.nn.models.tgn import TimeEncoder
 from torch_geometric.utils import scatter
+from .mlstm import MLSTMStateDictType, mLSTMMemoryAdapter
 
 TGNMessageStoreType = Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
 TGNMessageStoreWithZType = Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, '').lower() in {'1', 'true', 'yes'}
+
+
 class IdentityLayer(torch.nn.Module):
-    # NOTE: this object is used to implement those models that do not have a RNN-based memory
+    # Used by memory variants that do not have an RNN-based update.
     def __init__(self):
-          super().__init__()
-          self.I = torch.nn.Identity()
+        super().__init__()
+        self.I = torch.nn.Identity()
     
     def forward(self, x, *args, **kwargs):
-         return self.I(x)
+        return self.I(x)
     
 
 class NoMemory(torch.nn.Module):
@@ -57,19 +63,41 @@ class GeneralMemory(TGNMemory):
                  rnn: Optional[str] = None,
                  non_linearity: str = 'tanh',
                  init_time: int = 0,
-                 message_batch: int = 200):
-        
-        super().__init__(num_nodes, raw_msg_dim, memory_dim, time_dim, message_module, aggregator_module)
-
+                 message_batch: int = 200,
+                 use_mlstm: bool = False,
+                 mlstm_num_heads: int = 4,
+                 mlstm_state_max_nodes: Optional[int] = None,
+                 mlstm_debug: bool = False):
         self.message_batch = message_batch
-        if rnn is None:
-             self.gru = IdentityLayer()
+        self.use_mlstm = use_mlstm
+        self.mlstm_num_heads = mlstm_num_heads
+        env_max_nodes = os.environ.get('PROVIDS_MLSTM_STATE_MAX_NODES')
+        if mlstm_state_max_nodes is None and env_max_nodes:
+            mlstm_state_max_nodes = int(env_max_nodes)
+        self.mlstm_state_max_nodes = mlstm_state_max_nodes
+        self.mlstm_debug = mlstm_debug or _env_flag('PROVIDS_MLSTM_DEBUG')
+        self.mlstm_state_storage_dtype = self._resolve_mlstm_state_storage_dtype()
+
+        super().__init__(num_nodes, raw_msg_dim, memory_dim, time_dim, message_module, aggregator_module)
+        
+        # Initialize memory update module (GRU or mLSTM)
+        if self.use_mlstm:
+            self.gru = mLSTMMemoryAdapter(
+                message_dim=message_module.out_channels,
+                memory_dim=memory_dim,
+                num_heads=self.mlstm_num_heads,
+                context_length=64,
+                conv1d_kernel_size=4
+            )
         else:
-            rnn_instance = getattr(torch.nn, rnn)
-            if 'RNN' in rnn:
-                self.gru = rnn_instance(message_module.out_channels, memory_dim, nonlinearity=non_linearity)
+            if rnn is None:
+                self.gru = IdentityLayer()
             else:
-                self.gru = rnn_instance(message_module.out_channels, memory_dim)
+                rnn_instance = getattr(torch.nn, rnn)
+                if 'RNN' in rnn:
+                    self.gru = rnn_instance(message_module.out_channels, memory_dim, nonlinearity=non_linearity)
+                else:
+                    self.gru = rnn_instance(message_module.out_channels, memory_dim)
 
         self.memory[:] = torch.zeros(num_nodes, memory_dim).type_as(self.memory)
         self.last_update[:] = torch.ones(num_nodes).type_as(self.last_update) * init_time
@@ -82,6 +110,27 @@ class GeneralMemory(TGNMemory):
         self._store_mode: str = 'base'
         self._reset_message_store_z()
 
+    def _mlstm_log(self, msg: str):
+        if self.use_mlstm and self.mlstm_debug:
+            print(f"[mLSTM] {msg}")
+
+    def _resolve_mlstm_state_storage_dtype(self) -> Optional[torch.dtype]:
+        dtype_name = os.environ.get('PROVIDS_MLSTM_STATE_DTYPE', '').lower()
+        if dtype_name in {'', 'float32', 'fp32'}:
+            return None
+        if dtype_name in {'float16', 'fp16', 'half'}:
+            return torch.float16
+        if dtype_name in {'bfloat16', 'bf16'}:
+            return torch.bfloat16
+        raise ValueError(
+            "PROVIDS_MLSTM_STATE_DTYPE must be one of: float32, float16, bfloat16")
+
+    def _store_mlstm_tensor_cpu(self, tensor: Tensor) -> Tensor:
+        tensor = tensor.detach().cpu().clone()
+        if self.mlstm_state_storage_dtype is not None:
+            tensor = tensor.to(dtype=self.mlstm_state_storage_dtype)
+        return tensor
+
     def _reset_message_store_z(self):
         device = self.memory.device
         i = self.memory.new_empty((0, ), device=device, dtype=torch.long)
@@ -91,9 +140,135 @@ class GeneralMemory(TGNMemory):
         self.msg_s_store_z: TGNMessageStoreWithZType = {j: (i, i, i, msg, z, z) for j in range(self.num_nodes)}
         self.msg_d_store_z: TGNMessageStoreWithZType = {j: (i, i, i, msg, z, z) for j in range(self.num_nodes)}
 
+    def _init_mlstm_states(self):
+        """Initialize sparse dictionary storage for per-node mLSTM states."""
+        if not hasattr(self, '_mlstm_state_dict'):
+            self._mlstm_state_dict: Dict[int, MLSTMStateDictType] = {}
+        if not hasattr(self, '_pending_mlstm_node_ids'):
+            self._pending_mlstm_node_ids: Set[int] = set()
+
+    def _empty_mlstm_state(self, batch_size: int) -> MLSTMStateDictType:
+        """Create a dense zero state batch on the active memory device."""
+        mlstm_config = self.gru.mlstm_layer.config
+        NH = mlstm_config.num_heads
+        inner_dim = mlstm_config._inner_embedding_dim
+        if inner_dim % NH != 0:
+            raise ValueError(
+                f"mLSTM inner embedding dim={inner_dim} must be divisible "
+                f"by mlstm_num_heads={NH}.")
+
+        DH = inner_dim // NH
+        device = self.memory.device
+        dtype = self.memory.dtype
+
+        mlstm_state = (
+            torch.zeros(batch_size, NH, DH, DH, device=device, dtype=dtype),
+            torch.zeros(batch_size, NH, DH, 1, device=device, dtype=dtype),
+            torch.zeros(batch_size, NH, 1, 1, device=device, dtype=dtype),
+        )
+
+        conv_state = None
+        kernel_size = self.gru.mlstm_layer.conv1d.config.kernel_size
+        if kernel_size > 0:
+            conv_state = (
+                torch.zeros(batch_size, kernel_size, inner_dim,
+                            device=device, dtype=dtype),
+            )
+
+        return {'mlstm_state': mlstm_state, 'conv_state': conv_state}
+    
+    def _get_mlstm_state(self, n_id: Tensor) -> MLSTMStateDictType:
+        """Get full mLSTM layer states, creating zeros for unseen nodes."""
+        self._init_mlstm_states()
+        device = self.memory.device
+        dtype = self.memory.dtype
+
+        state = self._empty_mlstm_state(n_id.size(0))
+        c_state, n_state, m_state = state['mlstm_state']
+        conv_state = state['conv_state']
+
+        for i, node in enumerate(n_id.tolist()):
+            stored = self._mlstm_state_dict.get(node)
+            if stored is None:
+                continue
+
+            c_i, n_i, m_i = stored['mlstm_state']
+            c_state[i] = c_i.to(device=device, dtype=dtype)
+            n_state[i] = n_i.to(device=device, dtype=dtype)
+            m_state[i] = m_i.to(device=device, dtype=dtype)
+
+            stored_conv_state = stored.get('conv_state')
+            if conv_state is not None and stored_conv_state is not None:
+                conv_state[0][i] = stored_conv_state[0].to(device=device, dtype=dtype)
+
+        self._mlstm_log(
+            f"loaded state for {sum(1 for node in n_id.tolist() if node in self._mlstm_state_dict)}/"
+            f"{n_id.numel()} nodes; cached={len(self._mlstm_state_dict)}")
+        return state
+    
+    def _set_mlstm_state(self, n_id: Tensor, state: MLSTMStateDictType):
+        """Store updated full mLSTM layer states in a sparse CPU dictionary."""
+        self._init_mlstm_states()
+
+        new_nodes = set(n_id.tolist()).difference(self._mlstm_state_dict.keys())
+        if (self.mlstm_state_max_nodes is not None
+                and len(self._mlstm_state_dict) + len(new_nodes) > self.mlstm_state_max_nodes):
+            raise RuntimeError(
+                f"mLSTM state cache would exceed mlstm_state_max_nodes="
+                f"{self.mlstm_state_max_nodes}.")
+
+        c_state, n_state, m_state = state['mlstm_state']
+        conv_state = state.get('conv_state')
+        for i, node in enumerate(n_id.tolist()):
+            # Keep sparse recurrent cache on CPU to avoid long-lived GPU memory
+            # growth; move back to device on demand in _get_mlstm_state.
+            node_conv_state = None
+            if conv_state is not None:
+                node_conv_state = (self._store_mlstm_tensor_cpu(conv_state[0][i]),)
+
+            self._mlstm_state_dict[node] = (
+                {
+                    'mlstm_state': (
+                        self._store_mlstm_tensor_cpu(c_state[i]),
+                        self._store_mlstm_tensor_cpu(n_state[i]),
+                        self._store_mlstm_tensor_cpu(m_state[i]),
+                    ),
+                    'conv_state': node_conv_state,
+                }
+            )
+
+        self._mlstm_log(
+            f"stored state for {n_id.numel()} nodes; cached={len(self._mlstm_state_dict)};")
+
+    def _add_pending_mlstm_nodes(self, n_id: Tensor):
+        if self.use_mlstm:
+            self._init_mlstm_states()
+            self._pending_mlstm_node_ids.update(int(i) for i in n_id.tolist())
+
+    def _discard_pending_mlstm_nodes(self, n_id: Tensor):
+        if self.use_mlstm:
+            self._init_mlstm_states()
+            self._pending_mlstm_node_ids.difference_update(int(i) for i in n_id.tolist())
+
+    def _pending_mlstm_nodes_tensor(self) -> Tensor:
+        self._init_mlstm_states()
+        if len(self._pending_mlstm_node_ids) == 0:
+            return torch.empty(0, dtype=torch.long, device=self.memory.device)
+        return torch.tensor(sorted(self._pending_mlstm_node_ids),
+                            dtype=torch.long, device=self.memory.device)
+    
+    def reset_mlstm_states(self):
+        """Reset all mLSTM states by clearing the state dictionary."""
+        if self.use_mlstm:
+            self._mlstm_state_dict = {}
+            self._pending_mlstm_node_ids = set()
+            self._mlstm_log("reset cached states")
+
     def reset_state(self):
         super().reset_state()
         self._reset_message_store_z()
+        if self.use_mlstm:
+            self.reset_mlstm_states()
 
     def _update_msg_store_z(self, src: Tensor, dst: Tensor, t: Tensor,
                             raw_msg: Tensor, z_src: Tensor, z_dst: Tensor,
@@ -128,29 +303,41 @@ class GeneralMemory(TGNMemory):
         msg = msg_module(z_src, z_dst, raw_msg, t_enc)
         return msg, t, src, dst
 
-    def _get_updated_memory(self, n_id: Tensor):
-        if getattr(self, '_store_mode', 'base') != 'z':
-            return super()._get_updated_memory(n_id)
+    def _update_memory(self, n_id: Tensor):
+        memory, last_update = self._get_updated_memory(
+            n_id, commit_mlstm_state=self.use_mlstm)
+        self.memory[n_id] = memory
+        self.last_update[n_id] = last_update
 
+    def _get_updated_memory(self, n_id: Tensor,
+                            commit_mlstm_state: bool = False):
         self._assoc[n_id] = torch.arange(n_id.size(0), device=n_id.device)
-
-        # Compute messages (src -> dst) using stored GNN embeddings.
-        msg_s, t_s, src_s, dst_s = self._compute_msg_z(n_id, self.msg_s_store_z,
-                                                       self.msg_s_module)
-        # Compute messages (dst -> src) using stored GNN embeddings.
-        msg_d, t_d, src_d, dst_d = self._compute_msg_z(n_id, self.msg_d_store_z,
-                                                       self.msg_d_module)
-
+        
+        if getattr(self, '_store_mode', 'base') == 'z':
+            # z mode: use stored GNN embeddings
+            msg_s, t_s, src_s, dst_s = self._compute_msg_z(n_id, self.msg_s_store_z, self.msg_s_module)
+            msg_d, t_d, src_d, dst_d = self._compute_msg_z(n_id, self.msg_d_store_z, self.msg_d_module)
+        else:
+            # base mode: use internal message stores
+            msg_s, t_s, src_s, dst_s = self._compute_msg(n_id, self.msg_s_store, self.msg_s_module)
+            msg_d, t_d, src_d, dst_d = self._compute_msg(n_id, self.msg_d_store, self.msg_d_module)
+        
         # Aggregate messages.
         idx = torch.cat([src_s, src_d], dim=0)
         msg = torch.cat([msg_s, msg_d], dim=0)
         t = torch.cat([t_s, t_d], dim=0)
         aggr = self.aggr_module(msg, self._assoc[idx], t, n_id.size(0))
 
-        # Get local copy of updated memory.
-        memory = self.gru(aggr, self.memory[n_id])
+        # Update memory: mLSTM or GRU
+        if self.use_mlstm:
+            state = self._get_mlstm_state(n_id)
+            memory, state_new = self.gru(aggr, self.memory[n_id], state)
+            if commit_mlstm_state:
+                self._set_mlstm_state(n_id, state_new)
+        else:
+            memory = self.gru(aggr, self.memory[n_id])
 
-        # Get local copy of updated `last_update`.
+        # Get last updates.
         dim_size = self.last_update.size(0)
         last_update = scatter(t, idx, 0, dim_size, reduce='max')[n_id]
 
@@ -181,9 +368,11 @@ class GeneralMemory(TGNMemory):
 
         if self.training:
             self._update_memory(n_id)
+            self._discard_pending_mlstm_nodes(n_id)
             self._update_msg_store_z(src, dst, t, raw_msg, z_src, z_dst, self.msg_s_store_z)
             # Reverse direction store: (dst -> src) with swapped embeddings.
             self._update_msg_store_z(dst, src, t, raw_msg, z_dst, z_src, self.msg_d_store_z)
+            self._add_pending_mlstm_nodes(n_id)
         else:
             self._update_msg_store_z(src, dst, t, raw_msg, z_src, z_dst, self.msg_s_store_z)
             self._update_msg_store_z(dst, src, t, raw_msg, z_dst, z_src, self.msg_d_store_z)
@@ -203,10 +392,20 @@ class GeneralMemory(TGNMemory):
         """Sets the module in training mode."""
         if self.training and not mode:
             # Flush message store to memory in case we just entered eval mode.
-            # Do it in batches of nodes, otherwise CUDA runs out of memory for datasets with millions of nodes
-            for i in range(0, self.num_nodes, self.message_batch):
-                self._update_memory(
-                    torch.arange(i, min(self.num_nodes, i + self.message_batch), device=self.memory.device))
+            if self.use_mlstm:
+                n_id = self._pending_mlstm_nodes_tensor()
+                flush_batch = min(self.message_batch, 32)
+                self._mlstm_log(
+                    f"train->eval flush pending={n_id.numel()} batch_size={flush_batch}")
+                for i in range(0, n_id.size(0), flush_batch):
+                    self._update_memory(n_id[i:i + flush_batch])
+                self._pending_mlstm_node_ids.clear()
+                self._mlstm_log(f"train->eval flush complete; cached={len(self._mlstm_state_dict)};")
+            else:
+                # Preserve PyG's GRU behavior: all nodes are flushed.
+                for i in range(0, self.num_nodes, self.message_batch):
+                    self._update_memory(
+                        torch.arange(i, min(self.num_nodes, i + self.message_batch), device=self.memory.device))
             self._reset_message_store()
             self._reset_message_store_z()
         super(TGNMemory, self).train(mode)
@@ -216,6 +415,14 @@ class GeneralMemory(TGNMemory):
         # only the relevant message-store entries after the optimizer step.
         self._store_mode = 'base'
         self._last_updated_n_id = torch.cat([src, dst]).unique()
+        n_id = self._last_updated_n_id
+        if self.training and self.use_mlstm:
+            self._update_memory(n_id)
+            self._discard_pending_mlstm_nodes(n_id)
+            self._update_msg_store(src, dst, t, raw_msg, self.msg_s_store)
+            self._update_msg_store(dst, src, t, raw_msg, self.msg_d_store)
+            self._add_pending_mlstm_nodes(n_id)
+            return
         return super().update_state(src, dst, t, raw_msg)
 
     def detach(self):
@@ -354,4 +561,3 @@ class LastUpdateMemory(torch.nn.Module):
     def forward(self, n_id):
         return self.last_update[n_id]
     
-
