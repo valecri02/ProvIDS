@@ -269,6 +269,8 @@ class GeneralMemory(TGNMemory):
         self._reset_message_store_z()
         if self.use_mlstm:
             self.reset_mlstm_states()
+        if self.use_mlstm:
+            self.reset_mlstm_states()
 
     def _update_msg_store_z(self, src: Tensor, dst: Tensor, t: Tensor,
                             raw_msg: Tensor, z_src: Tensor, z_dst: Tensor,
@@ -322,6 +324,16 @@ class GeneralMemory(TGNMemory):
             msg_s, t_s, src_s, dst_s = self._compute_msg(n_id, self.msg_s_store, self.msg_s_module)
             msg_d, t_d, src_d, dst_d = self._compute_msg(n_id, self.msg_d_store, self.msg_d_module)
         
+        
+        if getattr(self, '_store_mode', 'base') == 'z':
+            # z mode: use stored GNN embeddings
+            msg_s, t_s, src_s, dst_s = self._compute_msg_z(n_id, self.msg_s_store_z, self.msg_s_module)
+            msg_d, t_d, src_d, dst_d = self._compute_msg_z(n_id, self.msg_d_store_z, self.msg_d_module)
+        else:
+            # base mode: use internal message stores
+            msg_s, t_s, src_s, dst_s = self._compute_msg(n_id, self.msg_s_store, self.msg_s_module)
+            msg_d, t_d, src_d, dst_d = self._compute_msg(n_id, self.msg_d_store, self.msg_d_module)
+        
         # Aggregate messages.
         idx = torch.cat([src_s, src_d], dim=0)
         msg = torch.cat([msg_s, msg_d], dim=0)
@@ -337,6 +349,7 @@ class GeneralMemory(TGNMemory):
         else:
             memory = self.gru(aggr, self.memory[n_id])
 
+        # Get last updates.
         # Get last updates.
         dim_size = self.last_update.size(0)
         last_update = scatter(t, idx, 0, dim_size, reduce='max')[n_id]
