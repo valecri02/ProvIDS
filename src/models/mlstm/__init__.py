@@ -4,13 +4,15 @@
 
 from .cell import mLSTMCell, mLSTMCellConfig
 from .layer import mLSTMLayer, mLSTMLayerConfig
+from .memory_adapter import MLSTMStateDictType, mLSTMMemoryAdapter
 from .utils import UpProjConfigMixin
 
 __all__ = [
+    "MLSTMStateDictType",
     "mLSTMCell",
     "mLSTMCellConfig",
     "mLSTMLayer",
     "mLSTMLayerConfig",
+    "mLSTMMemoryAdapter",
     "UpProjConfigMixin",
 ]
-

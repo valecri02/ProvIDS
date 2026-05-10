@@ -1,92 +1,31 @@
 import torch
 import os
-from typing import Callable, Optional, Dict, Tuple, Any, Set
+from typing import Callable, Optional, Dict, Tuple, Set
 from torch_geometric.nn import TransformerConv
 from torch_geometric.nn.inits import zeros
 from torch_geometric.nn import TGNMemory 
 from torch import Tensor
 from torch_geometric.nn.models.tgn import TimeEncoder
 from torch_geometric.utils import scatter
+from .mlstm import MLSTMStateDictType, mLSTMMemoryAdapter
 
 TGNMessageStoreType = Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
 TGNMessageStoreWithZType = Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
 MLSTMStateDictType = Dict[str, Any]
 
 
-class mLSTMMemoryAdapter(torch.nn.Module):
-    """Adapter wrapping mLSTMLayer.step for single-step node memory updates.
-    
-    Transforms (aggregated_msg, prev_memory) into mLSTMLayer.step format
-    and returns updated memory and the full recurrent mLSTM layer state.
-    """
-    def __init__(self, message_dim: int, memory_dim: int, num_heads: int = 4,
-                 context_length: int = 64, conv1d_kernel_size: int = 4):
-        super().__init__()
-        from .mlstm import mLSTMLayer, mLSTMLayerConfig
-        
-        self.memory_dim = memory_dim
-        self.message_dim = message_dim
-        self.input_proj = torch.nn.Linear(message_dim, memory_dim)
-        
-        config = mLSTMLayerConfig(
-            embedding_dim=memory_dim,
-            num_heads=num_heads,
-            context_length=context_length,
-            conv1d_kernel_size=conv1d_kernel_size,
-            bias=False,
-            dropout=0.0,
-        )
-        self.mlstm_layer = mLSTMLayer(config)
-        
-        inner_dim = self.mlstm_layer.config._inner_embedding_dim
-        if inner_dim % num_heads != 0:
-            raise ValueError(
-                f"mLSTM inner embedding dim={inner_dim} must be divisible "
-                f"by mlstm_num_heads={num_heads}.")
-        
-    def forward(self, aggregated_msg: Tensor, prev_memory: Tensor,
-                state: Optional[MLSTMStateDictType] = None) -> Tuple[Tensor, MLSTMStateDictType]:
-        """
-        Args:
-            aggregated_msg: [batch_size, message_dim] aggregated messages per node
-            prev_memory: [batch_size, memory_dim] previous node memory
-            state: optional full mLSTM layer state with `mlstm_state`
-                and `conv_state`
-            
-        Returns:
-            new_memory: [batch_size, memory_dim] updated node memory
-            state: updated full mLSTM layer recurrent state
-        """
-        # Project aggregated messages to the mLSTM embedding size.
-        x = self.input_proj(aggregated_msg).unsqueeze(1)
-        mlstm_state = None if state is None else state.get('mlstm_state')
-        conv_state = None if state is None else state.get('conv_state')
-        
-        # Call mLSTMLayer.step with optional full recurrent state.
-        output, state_dict = self.mlstm_layer.step(
-            x, 
-            mlstm_state=mlstm_state,
-            conv_state=conv_state
-        )
-        
-        # Squeeze sequence dimension: [batch_size, 1, memory_dim] -> [batch_size, memory_dim]
-        new_memory = output.squeeze(1)
-        
-        return new_memory, state_dict
-
-    def reset_parameters(self):
-        self.input_proj.reset_parameters()
-        self.mlstm_layer.reset_parameters()
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, '').lower() in {'1', 'true', 'yes'}
 
 
 class IdentityLayer(torch.nn.Module):
-    # NOTE: this object is used to implement those models that do not have a RNN-based memory
+    # Used by memory variants that do not have an RNN-based update.
     def __init__(self):
-          super().__init__()
-          self.I = torch.nn.Identity()
+        super().__init__()
+        self.I = torch.nn.Identity()
     
     def forward(self, x, *args, **kwargs):
-         return self.I(x)
+        return self.I(x)
     
 
 class NoMemory(torch.nn.Module):
@@ -137,7 +76,7 @@ class GeneralMemory(TGNMemory):
         if mlstm_state_max_nodes is None and env_max_nodes:
             mlstm_state_max_nodes = int(env_max_nodes)
         self.mlstm_state_max_nodes = mlstm_state_max_nodes
-        self.mlstm_debug = mlstm_debug or os.environ.get('PROVIDS_MLSTM_DEBUG', '').lower() in {'1', 'true', 'yes'}
+        self.mlstm_debug = mlstm_debug or _env_flag('PROVIDS_MLSTM_DEBUG')
         self.mlstm_state_storage_dtype = self._resolve_mlstm_state_storage_dtype()
 
         super().__init__(num_nodes, raw_msg_dim, memory_dim, time_dim, message_module, aggregator_module)
@@ -300,20 +239,7 @@ class GeneralMemory(TGNMemory):
             )
 
         self._mlstm_log(
-            f"stored state for {n_id.numel()} nodes; cached={len(self._mlstm_state_dict)}; "
-            f"approx={self._estimate_mlstm_state_bytes() / (1024 ** 2):.2f} MiB")
-
-    def _estimate_mlstm_state_bytes(self) -> int:
-        """Approximate CPU bytes used by cached mLSTM recurrent states."""
-        self._init_mlstm_states()
-        total = 0
-        for state in self._mlstm_state_dict.values():
-            for tensor in state['mlstm_state']:
-                total += tensor.numel() * tensor.element_size()
-            conv_state = state.get('conv_state')
-            if conv_state is not None:
-                total += conv_state[0].numel() * conv_state[0].element_size()
-        return total
+            f"stored state for {n_id.numel()} nodes; cached={len(self._mlstm_state_dict)};")
 
     def _add_pending_mlstm_nodes(self, n_id: Tensor):
         if self.use_mlstm:
@@ -342,6 +268,8 @@ class GeneralMemory(TGNMemory):
     def reset_state(self):
         super().reset_state()
         self._reset_message_store_z()
+        if self.use_mlstm:
+            self.reset_mlstm_states()
         if self.use_mlstm:
             self.reset_mlstm_states()
 
@@ -397,6 +325,16 @@ class GeneralMemory(TGNMemory):
             msg_s, t_s, src_s, dst_s = self._compute_msg(n_id, self.msg_s_store, self.msg_s_module)
             msg_d, t_d, src_d, dst_d = self._compute_msg(n_id, self.msg_d_store, self.msg_d_module)
         
+        
+        if getattr(self, '_store_mode', 'base') == 'z':
+            # z mode: use stored GNN embeddings
+            msg_s, t_s, src_s, dst_s = self._compute_msg_z(n_id, self.msg_s_store_z, self.msg_s_module)
+            msg_d, t_d, src_d, dst_d = self._compute_msg_z(n_id, self.msg_d_store_z, self.msg_d_module)
+        else:
+            # base mode: use internal message stores
+            msg_s, t_s, src_s, dst_s = self._compute_msg(n_id, self.msg_s_store, self.msg_s_module)
+            msg_d, t_d, src_d, dst_d = self._compute_msg(n_id, self.msg_d_store, self.msg_d_module)
+        
         # Aggregate messages.
         idx = torch.cat([src_s, src_d], dim=0)
         msg = torch.cat([msg_s, msg_d], dim=0)
@@ -412,6 +350,7 @@ class GeneralMemory(TGNMemory):
         else:
             memory = self.gru(aggr, self.memory[n_id])
 
+        # Get last updates.
         # Get last updates.
         dim_size = self.last_update.size(0)
         last_update = scatter(t, idx, 0, dim_size, reduce='max')[n_id]
@@ -475,9 +414,7 @@ class GeneralMemory(TGNMemory):
                 for i in range(0, n_id.size(0), flush_batch):
                     self._update_memory(n_id[i:i + flush_batch])
                 self._pending_mlstm_node_ids.clear()
-                self._mlstm_log(
-                    f"train->eval flush complete; cached={len(self._mlstm_state_dict)}; "
-                    f"approx={self._estimate_mlstm_state_bytes() / (1024 ** 2):.2f} MiB")
+                self._mlstm_log(f"train->eval flush complete; cached={len(self._mlstm_state_dict)};")
             else:
                 # Preserve PyG's GRU behavior: all nodes are flushed.
                 for i in range(0, self.num_nodes, self.message_batch):
