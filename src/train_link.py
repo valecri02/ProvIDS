@@ -96,7 +96,7 @@ def _update_node_gnn_snapshot(model, eval_name, batch_idx, src, pos_dst, t, aux)
         put(pos_dst_cpu[event_idx].item(), event_idx, z_dst_pos_cpu[event_idx])
 
 
-def _save_node_gnn_snapshot(model, ckpt_path, eval_name):
+def _save_node_gnn_snapshot(model, ckpt_path, eval_name, conf_id=None, seed=None):
     """Save one latest observed GNN output embedding per node."""
     if ckpt_path is None:
         raise ValueError("ckpt_path must be provided when save_embeddings=True")
@@ -120,7 +120,10 @@ def _save_node_gnn_snapshot(model, ckpt_path, eval_name):
     emb_df.insert(4, 'last_batch_idx', snapshot['batch_idx'])
     emb_df.insert(5, 'last_event_idx', snapshot['event_idx'])
 
-    emb_path = os.path.join(ckpt_path, f'{eval_name}_node_embeddings.csv')
+    prefix = ''
+    if conf_id is not None and seed is not None:
+        prefix = f'conf_{conf_id}_seed_{seed}_'
+    emb_path = os.path.join(ckpt_path, f'{prefix}{eval_name}_node_embeddings.csv')
     emb_df.to_csv(emb_path, index=False)
     print(
         f'Saved {eval_name} GNN embedding snapshot to {emb_path} '
@@ -214,7 +217,8 @@ def train(data, model, optimizer, train_loader, criterion, neighbor_loader, help
 
 @torch.no_grad()
 def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=None, eval_seed=12345,
-         return_predictions=False, device='cpu', eval_name='eval', wandb_log=False, static=False, save_embeddings=False, ckpt_path=None):
+         return_predictions=False, device='cpu', eval_name='eval', wandb_log=False, static=False,
+         save_embeddings=False, ckpt_path=None, conf_id=None, seed=None):
     t0 = time.time()
     model.eval()
 
@@ -316,7 +320,8 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
 
     true_values = (y_true_list, y_pred_list, y_pred_confidence_list.sigmoid(), hash_id_list) if return_predictions else None
     
-    emb_path = _save_node_gnn_snapshot(model, ckpt_path, eval_name) if save_emb else None
+    emb_path = _save_node_gnn_snapshot(
+        model, ckpt_path, eval_name, conf_id=conf_id, seed=seed) if save_emb else None
     
     if wandb_log:
         for k, v in scores.items():
@@ -573,7 +578,8 @@ def link_prediction_single(model_instance, conf):
                                 neighbor_loader=neighbor_loader, neg_sampler=tmp_train_neg_link_sampler, 
                                 helper=assoc, eval_seed=conf['exp_seed'], device=device, 
                                 eval_name='train_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
-                                static='static' in conf['version'], save_embeddings=conf.get('save_embeddings', False), ckpt_path=conf['ckpt_path'])
+                                static='static' in conf['version'], save_embeddings=conf.get('save_embeddings', False),
+                                ckpt_path=conf['ckpt_path'], conf_id=conf['conf_id'], seed=conf['seed'])
         
         if conf['reset_memory_eval']:
             if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
@@ -585,7 +591,8 @@ def link_prediction_single(model_instance, conf):
                                 neighbor_loader=neighbor_loader, neg_sampler=tmp_val_neg_link_sampler, 
                                 helper=assoc, eval_seed=conf['exp_seed'], device=device, 
                                 eval_name='val_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
-                                static='static' in conf['version'], save_embeddings=conf.get('save_embeddings', False), ckpt_path=conf['ckpt_path'])
+                                static='static' in conf['version'], save_embeddings=conf.get('save_embeddings', False),
+                                ckpt_path=conf['ckpt_path'], conf_id=conf['conf_id'], seed=conf['seed'])
         
         if conf['reset_memory_eval']:
             if int(conf.get('memory_enhancement', 0)) == 1 and hasattr(model, 'warm_reset_memory') and hasattr(data, 'x'):
@@ -597,7 +604,8 @@ def link_prediction_single(model_instance, conf):
                                 neighbor_loader=neighbor_loader, neg_sampler=tmp_test_neg_link_sampler, 
                                 helper=assoc, eval_seed=conf['exp_seed'], device=device, 
                                 eval_name='test_best', wandb_log=conf['wandb'], return_predictions=conf['return_predictions'], 
-                                static='static' in conf['version'], save_embeddings=conf.get('save_embeddings', False), ckpt_path=conf['ckpt_path'])
+                                static='static' in conf['version'], save_embeddings=conf.get('save_embeddings', False),
+                                ckpt_path=conf['ckpt_path'], conf_id=conf['conf_id'], seed=conf['seed'])
 
         ckpt['test_score'][strategy] = ts_scores
         ckpt['val_score'][strategy] = vl_scores
