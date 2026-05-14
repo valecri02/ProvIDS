@@ -14,6 +14,121 @@ import os
 from tqdm import tqdm
 
 
+def _reset_node_gnn_snapshot(model):
+    if hasattr(model, '_node_gnn_embedding_snapshot'):
+        delattr(model, '_node_gnn_embedding_snapshot')
+
+
+def _get_memory_state_snapshot(model):
+    """Return the exposed memory state after replay, detached on CPU."""
+    if getattr(model, 'memory', None) is None or not hasattr(model.memory, 'memory'):
+        return None
+
+    snapshot = {
+        'memory': model.memory.memory.detach().cpu().clone(),
+    }
+    if hasattr(model.memory, 'last_update'):
+        snapshot['last_update'] = model.memory.last_update.detach().cpu().clone()
+    return snapshot
+
+
+def _ensure_node_gnn_snapshot(model, embedding_dim):
+    snapshot = getattr(model, '_node_gnn_embedding_snapshot', None)
+    if snapshot is not None:
+        if snapshot['embedding'].shape[1] != embedding_dim:
+            raise ValueError(
+                f"GNN embedding dim changed from {snapshot['embedding'].shape[1]} to {embedding_dim}"
+            )
+        return snapshot
+
+    num_nodes = int(model.num_nodes)
+    snapshot = {
+        'embedding': np.full((num_nodes, embedding_dim), np.nan, dtype=np.float32),
+        'observed': np.zeros(num_nodes, dtype=bool),
+        'time': np.full(num_nodes, -1, dtype=np.int64),
+        'batch_idx': np.full(num_nodes, -1, dtype=np.int64),
+        'event_idx': np.full(num_nodes, -1, dtype=np.int64),
+    }
+    model._node_gnn_embedding_snapshot = snapshot
+    return snapshot
+
+
+def _update_node_gnn_snapshot(model, eval_name, batch_idx, src, pos_dst, t, aux):
+    """Cache the latest observed GNN output embedding per node."""
+    if not isinstance(aux, dict):
+        raise RuntimeError(
+            f"Model is expected to return a dict aux with z_src_gnn/z_dst_gnn for {eval_name}, "
+            f"but received {type(aux).__name__}."
+        )
+
+    z_src = aux.get('z_src_gnn', None)
+    z_dst_pos = aux.get('z_dst_gnn', None)
+    if z_src is None or z_dst_pos is None:
+        raise RuntimeError(
+            f"Model returned aux dict for {eval_name}, but it does not contain z_src_gnn/z_dst_gnn."
+        )
+
+    snapshot = _ensure_node_gnn_snapshot(model, z_src.size(1))
+
+    src_cpu = src.detach().cpu()
+    pos_dst_cpu = pos_dst.detach().cpu()
+    t_cpu = t.detach().cpu() if t is not None else None
+    z_src_cpu = z_src.detach().cpu()
+    z_dst_pos_cpu = z_dst_pos.detach().cpu()
+
+    def put(node_id, event_idx, embedding):
+        node_id = int(node_id)
+        t_val = int(t_cpu[event_idx].item()) if t_cpu is not None else -1
+        is_later = (
+            (not snapshot['observed'][node_id])
+            or (t_val, batch_idx, event_idx)
+            >= (snapshot['time'][node_id], snapshot['batch_idx'][node_id], snapshot['event_idx'][node_id])
+        )
+        if is_later:
+            snapshot['embedding'][node_id] = embedding.numpy()
+            snapshot['observed'][node_id] = True
+            snapshot['time'][node_id] = t_val
+            snapshot['batch_idx'][node_id] = batch_idx
+            snapshot['event_idx'][node_id] = event_idx
+
+    for event_idx in range(src_cpu.size(0)):
+        put(src_cpu[event_idx].item(), event_idx, z_src_cpu[event_idx])
+        put(pos_dst_cpu[event_idx].item(), event_idx, z_dst_pos_cpu[event_idx])
+
+
+def _save_node_gnn_snapshot(model, ckpt_path, eval_name):
+    """Save one latest observed GNN output embedding per node."""
+    if ckpt_path is None:
+        raise ValueError("ckpt_path must be provided when save_embeddings=True")
+    snapshot = getattr(model, '_node_gnn_embedding_snapshot', None)
+    if snapshot is None:
+        return None
+
+    embedding = snapshot['embedding']
+    dim_cols = [f'dim_{i}' for i in range(embedding.shape[1])]
+    emb_df = pd.DataFrame(embedding, columns=dim_cols)
+
+    snapshot_name = {
+        'train_best': 'train',
+        'val_best': 'train+val',
+        'test_best': 'train+val+test',
+    }.get(eval_name, eval_name)
+    emb_df.insert(0, 'snapshot', snapshot_name)
+    emb_df.insert(1, 'node_id', np.arange(embedding.shape[0], dtype=np.int64))
+    emb_df.insert(2, 'observed', snapshot['observed'])
+    emb_df.insert(3, 'last_time', snapshot['time'])
+    emb_df.insert(4, 'last_batch_idx', snapshot['batch_idx'])
+    emb_df.insert(5, 'last_event_idx', snapshot['event_idx'])
+
+    emb_path = os.path.join(ckpt_path, f'{eval_name}_node_embeddings.csv')
+    emb_df.to_csv(emb_path, index=False)
+    print(
+        f'Saved {eval_name} GNN embedding snapshot to {emb_path} '
+        f'({len(emb_df)} nodes, {snapshot["observed"].sum()} observed, snapshot={snapshot_name})'
+    )
+    return emb_path
+
+
 def train(data, model, optimizer, train_loader, criterion, neighbor_loader, helper, train_neg_sampler=None, device='cpu', backward=True, static=False, conf=None):
     model.train()
     # Start with a fresh memory and an empty graph
@@ -104,7 +219,6 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
     model.eval()
 
     y_pred_list, y_true_list, y_pred_confidence_list, hash_id_list, malicious_list = [], [], [], [], []
-    embeddings_list = []  # Long-format: one row per embedding observation with metadata
     save_emb = save_embeddings and eval_name in ['train_best', 'val_best', 'test_best']
     batch_idx = 0
     
@@ -113,6 +227,7 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
         if not static:
             batch = batch.to(device)
             src, pos_dst, t, msg, static_x = batch.src, batch.dst, batch.t, batch.msg, batch.x
+            neg_dst = None
 
             if neg_sampler is None:
                 # NOTE: When the neg_sampler is None we are doing link regression
@@ -137,97 +252,14 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
                                     edge_index=edge_index, id_mapper=helper, src_indic=src_indic)
             pos_out, neg_out, *rest = _out
             aux = rest[0] if len(rest) > 0 else None
-            
-            # Check if embeddings are expected but not available
-            if save_emb and aux is None:
-                raise RuntimeError(
-                    f"Model is expected to return node embeddings (aux) for {eval_name}, but received None. "
-                    "Ensure the model is returning embeddings in its auxiliary outputs."
-                )
-
-            # Collect embeddings if requested (long-format with metadata).
             if save_emb:
-                if not isinstance(aux, dict):
+                if aux is None:
                     raise RuntimeError(
-                        f"Model is expected to return a dict aux with z_src_gnn/z_dst_gnn for {eval_name}, "
-                        f"but received {type(aux).__name__}."
+                        f"Model is expected to return node embeddings (aux) for {eval_name}, but received None. "
+                        "Ensure the model is returning embeddings in its auxiliary outputs."
                     )
-
-                z_src = aux.get('z_src_gnn', None)
-                z_dst_pos = aux.get('z_dst_gnn', None)
-                z_dst_neg = aux.get('z_neg_dst_gnn', None)
-                if z_src is None or z_dst_pos is None:
-                    raise RuntimeError(
-                        f"Model returned aux dict for {eval_name}, but it does not contain z_src_gnn/z_dst_gnn."
-                    )
-
-                # Extract CPU tensors and values
-                src_list = src.detach().cpu().tolist()
-                pos_dst_list = pos_dst.detach().cpu().tolist()
-                neg_dst_list = neg_dst.detach().cpu().tolist() if neg_dst is not None else []
-                t_list = t.detach().cpu().tolist() if t is not None else [None] * len(src_list)
-                z_src_cpu = z_src.detach().cpu()
-                z_dst_pos_cpu = z_dst_pos.detach().cpu()
-                z_dst_neg_cpu = z_dst_neg.detach().cpu() if z_dst_neg is not None else None
-
-                # Collect positive edge embeddings (src and pos_dst)
-                for event_idx, (src_id, dst_id, t_val) in enumerate(zip(src_list, pos_dst_list, t_list)):
-                    z_src_emb = z_src_cpu[event_idx].numpy()
-                    z_dst_emb = z_dst_pos_cpu[event_idx].numpy()
-                    
-                    # Source node in positive edge
-                    embeddings_list.append({
-                        'split': eval_name,
-                        'batch_idx': batch_idx,
-                        'event_idx': event_idx,
-                        'time': t_val,
-                        'node_id': int(src_id),
-                        'role': 'src',
-                        'edge_label': 'pos',
-                        'embedding': z_src_emb
-                    })
-                    
-                    # Positive destination node
-                    embeddings_list.append({
-                        'split': eval_name,
-                        'batch_idx': batch_idx,
-                        'event_idx': event_idx,
-                        'time': t_val,
-                        'node_id': int(dst_id),
-                        'role': 'pos_dst',
-                        'edge_label': 'pos',
-                        'embedding': z_dst_emb
-                    })
-
-                # Collect negative edge embeddings (src and neg_dst) if available
-                if z_dst_neg_cpu is not None and len(neg_dst_list) > 0:
-                    for event_idx, (src_id, neg_id, t_val) in enumerate(zip(src_list, neg_dst_list, t_list)):
-                        z_src_emb = z_src_cpu[event_idx].numpy()
-                        z_neg_emb = z_dst_neg_cpu[event_idx].numpy()
-                        
-                        # Source node in negative edge
-                        embeddings_list.append({
-                            'split': eval_name,
-                            'batch_idx': batch_idx,
-                            'event_idx': event_idx,
-                            'time': t_val,
-                            'node_id': int(src_id),
-                            'role': 'src',
-                            'edge_label': 'neg',
-                            'embedding': z_src_emb
-                        })
-                        
-                        # Negative destination node
-                        embeddings_list.append({
-                            'split': eval_name,
-                            'batch_idx': batch_idx,
-                            'event_idx': event_idx,
-                            'time': t_val,
-                            'node_id': int(neg_id),
-                            'role': 'neg_dst',
-                            'edge_label': 'neg',
-                            'embedding': z_neg_emb
-                        })
+                _update_node_gnn_snapshot(model, eval_name, batch_idx, src, pos_dst, t, aux)
+            
         else:
             t = None
             static_x = None
@@ -284,28 +316,7 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
 
     true_values = (y_true_list, y_pred_list, y_pred_confidence_list.sigmoid(), hash_id_list) if return_predictions else None
     
-    # Save embeddings if collected (long-format with metadata)
-    if save_emb and embeddings_list:
-        import pandas as pd
-        # Convert embedding arrays to separate dim columns
-        emb_df_data = []
-        for row in embeddings_list:
-            row_data = {k: v for k, v in row.items() if k != 'embedding'}
-            embedding = row['embedding']
-            for dim_idx, val in enumerate(embedding):
-                row_data[f'dim_{dim_idx}'] = val
-            emb_df_data.append(row_data)
-        
-        emb_df = pd.DataFrame(emb_df_data)
-        emb_path = os.path.join(ckpt_path, f'{eval_name}_node_embeddings.csv')
-        # Append to existing file if it exists, otherwise create new
-        if os.path.exists(emb_path):
-            existing_df = pd.read_csv(emb_path)
-            emb_df = pd.concat([existing_df, emb_df], ignore_index=True)
-        emb_df.to_csv(emb_path, index=False)
-        num_rows = len(emb_df)
-        num_unique_nodes = emb_df['node_id'].nunique()
-        print(f'Saved {eval_name} embeddings to {emb_path} ({num_rows} observations, {num_unique_nodes} unique nodes)')
+    emb_path = _save_node_gnn_snapshot(model, ckpt_path, eval_name) if save_emb else None
     
     if wandb_log:
         for k, v in scores.items():
@@ -321,7 +332,7 @@ def eval(data, model, loader, criterion, neighbor_loader, helper, neg_sampler=No
                                           title=_cm_name)
         wandb.log({_cm_name : _cm}, commit='val' in eval_name or 'test' in eval_name)
         
-    return scores, true_values, (embeddings_list if save_emb else None)
+    return scores, true_values, emb_path
 
 
 @ray.remote(num_cpus=int(os.environ.get('NUM_CPUS_PER_TASK', 1)), num_gpus=float(os.environ.get('NUM_GPUS_PER_TASK', 0.)))
@@ -556,6 +567,7 @@ def link_prediction_single(model_instance, conf):
         else:
             model.reset_memory()
         neighbor_loader.reset_state()
+        _reset_node_gnn_snapshot(model)
 
         tr_scores, tr_true_values, tr_embeddings = eval(data=data, model=model, loader=train_loader, criterion=criterion, 
                                 neighbor_loader=neighbor_loader, neg_sampler=tmp_train_neg_link_sampler, 
@@ -596,6 +608,11 @@ def link_prediction_single(model_instance, conf):
                 ckpt['embeddings'] = {}
             ckpt['embeddings'][strategy] = (tr_embeddings, vl_embeddings, ts_embeddings)
         ckpt['loss'][strategy] = (tr_scores['loss'], vl_scores['loss'], ts_scores['loss'])
+        memory_snapshot = _get_memory_state_snapshot(model)
+        if memory_snapshot is not None:
+            if 'final_memory_state' not in ckpt:
+                ckpt['final_memory_state'] = {}
+            ckpt['final_memory_state'][strategy] = memory_snapshot
         if 'darpa' in conf['data_name']:
             ts_true_values = ts_true_values[2].squeeze()[ts_true_values[0].bool().squeeze()].numpy(), ts_true_values[3].cpu().squeeze().numpy()
             df = pd.DataFrame({'hash_id':ts_true_values[1], 'prob':ts_true_values[0]})
