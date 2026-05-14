@@ -11,7 +11,6 @@ from .mlstm import MLSTMStateDictType, mLSTMMemoryAdapter
 
 TGNMessageStoreType = Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
 TGNMessageStoreWithZType = Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
-MLSTMStateDictType = Dict[str, Any]
 
 
 def _env_flag(name: str) -> bool:
