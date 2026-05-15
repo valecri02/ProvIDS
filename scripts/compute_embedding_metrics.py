@@ -185,6 +185,97 @@ def compute_matrix_metrics(
     }
 
 
+def seed_paths(ckpt_dir: str, conf_id: int, seed: int):
+    ckpt_dir = os.path.expanduser(ckpt_dir)
+    prefix = f"conf_{conf_id}_seed_{seed}"
+    return {
+        "train": os.path.join(ckpt_dir, f"{prefix}_train_best_node_embeddings.csv"),
+        "val": os.path.join(ckpt_dir, f"{prefix}_val_best_node_embeddings.csv"),
+        "test": os.path.join(ckpt_dir, f"{prefix}_test_best_node_embeddings.csv"),
+        "ckpt": os.path.join(ckpt_dir, f"{prefix}.pt"),
+    }
+
+
+def compute_rows(
+    model_name: str,
+    num_layers: int,
+    strategy: str,
+    train_emb_csv: str = None,
+    val_emb_csv: str = None,
+    test_emb_csv: str = None,
+    ckpt: str = None,
+    seed: int = None,
+):
+    rows = []
+
+    for state_name, path in [
+        ("train", train_emb_csv),
+        ("val", val_emb_csv),
+        ("test", test_emb_csv),
+    ]:
+        if path is None:
+            continue
+        _, X, _ = read_snapshot_csv(path)
+        row = compute_matrix_metrics(
+            X=X,
+            state_name=state_name,
+            embedding_source="gnn",
+            model_name=model_name,
+            num_layers=num_layers,
+        )
+        if seed is not None:
+            row["seed"] = seed
+        rows.append(row)
+
+    if ckpt is not None:
+        memory, _ = read_final_memory_from_ckpt(ckpt, strategy)
+        row = compute_matrix_metrics(
+            X=memory,
+            state_name="test",
+            embedding_source="memory",
+            model_name=model_name,
+            num_layers=num_layers,
+        )
+        if seed is not None:
+            row["seed"] = seed
+        rows.append(row)
+
+    return rows
+
+
+def aggregate_seed_rows(rows: list[dict]):
+    if not rows:
+        return []
+
+    df = pd.DataFrame(rows)
+    group_cols = ["model_name", "num_layers", "state", "embedding_source"]
+    metric_cols = [
+        "num_nodes",
+        "num_zero_vectors",
+        "mean_cosine",
+        "std_cosine",
+        "dirichlet_energy",
+        "mean_dirichlet_pairwise",
+        "std_dirichlet_pairwise",
+    ]
+
+    out_rows = []
+    for keys, group in df.groupby(group_cols, sort=False):
+        out = dict(zip(group_cols, keys))
+        out["num_layers"] = int(out["num_layers"])
+        out["num_seeds"] = int(group["seed"].nunique()) if "seed" in group else int(len(group))
+        out["embedding_dim"] = int(group["embedding_dim"].iloc[0])
+
+        for col in metric_cols:
+            values = group[col].to_numpy(dtype=np.float64)
+            out[f"{col}_mean"] = float(np.mean(values))
+            out[f"{col}_std"] = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+
+        out_rows.append(out)
+
+    return out_rows
+
+
 def append_rows(csv_path: str, rows: list[dict]):
     out_dir = os.path.dirname(csv_path)
     if out_dir:
@@ -204,6 +295,9 @@ def main():
     parser.add_argument("--val-emb-csv", help="Path to train+val snapshot CSV.")
     parser.add_argument("--test-emb-csv", help="Path to train+val+test snapshot CSV.")
     parser.add_argument("--ckpt", help="Checkpoint containing final_memory_state.")
+    parser.add_argument("--ckpt-dir", help="Directory with conf_<id>_seed_<seed> files.")
+    parser.add_argument("--conf-id", default=0, type=int)
+    parser.add_argument("--seeds", nargs="+", type=int, help="Seeds to aggregate, e.g. --seeds 0 1 2.")
     parser.add_argument("--strategy", default="split", help="Strategy key inside final_memory_state.")
     parser.add_argument("--csv-out", default="node_similarity_stats.csv")
     parser.add_argument("--model-name", required=True)
@@ -211,36 +305,34 @@ def main():
 
     args = parser.parse_args()
 
-    rows = []
-
-    for state_name, path in [
-        ("train", args.train_emb_csv),
-        ("val", args.val_emb_csv),
-        ("test", args.test_emb_csv),
-    ]:
-        if path is None:
-            continue
-        _, X, _ = read_snapshot_csv(path)
-        rows.append(
-            compute_matrix_metrics(
-                X=X,
-                state_name=state_name,
-                embedding_source="gnn",
-                model_name=args.model_name,
-                num_layers=args.num_layers,
+    if args.seeds is not None:
+        if args.ckpt_dir is None:
+            raise SystemExit("--ckpt-dir is required when using --seeds.")
+        seed_rows = []
+        for seed in args.seeds:
+            paths = seed_paths(args.ckpt_dir, args.conf_id, seed)
+            seed_rows.extend(
+                compute_rows(
+                    model_name=args.model_name,
+                    num_layers=args.num_layers,
+                    strategy=args.strategy,
+                    train_emb_csv=paths["train"],
+                    val_emb_csv=paths["val"],
+                    test_emb_csv=paths["test"],
+                    ckpt=paths["ckpt"],
+                    seed=seed,
+                )
             )
-        )
-
-    if args.ckpt is not None:
-        memory, _ = read_final_memory_from_ckpt(args.ckpt, args.strategy)
-        rows.append(
-            compute_matrix_metrics(
-                X=memory,
-                state_name="test",
-                embedding_source="memory",
-                model_name=args.model_name,
-                num_layers=args.num_layers,
-            )
+        rows = aggregate_seed_rows(seed_rows)
+    else:
+        rows = compute_rows(
+            model_name=args.model_name,
+            num_layers=args.num_layers,
+            strategy=args.strategy,
+            train_emb_csv=args.train_emb_csv,
+            val_emb_csv=args.val_emb_csv,
+            test_emb_csv=args.test_emb_csv,
+            ckpt=args.ckpt,
         )
 
     if not rows:
@@ -252,12 +344,21 @@ def main():
     print("Done.")
     for row in rows:
         print(f"\nState: {row['state']} ({row['embedding_source']})")
-        print(f"  nodes: {row['num_nodes']}")
-        print(f"  mean cosine: {row['mean_cosine']:.6f}")
-        print(f"  std cosine: {row['std_cosine']:.6f}")
-        print(f"  Dirichlet energy: {row['dirichlet_energy']:.6f}")
-        print(f"  mean pairwise Dirichlet: {row['mean_dirichlet_pairwise']:.6f}")
-        print(f"  std pairwise Dirichlet: {row['std_dirichlet_pairwise']:.6f}")
+        if "num_seeds" in row:
+            print(f"  seeds: {row['num_seeds']}")
+            print(f"  mean cosine: {row['mean_cosine_mean']:.6f} +/- {row['mean_cosine_std']:.6f}")
+            print(
+                f"  mean pairwise Dirichlet: "
+                f"{row['mean_dirichlet_pairwise_mean']:.6f} +/- "
+                f"{row['mean_dirichlet_pairwise_std']:.6f}"
+            )
+        else:
+            print(f"  nodes: {row['num_nodes']}")
+            print(f"  mean cosine: {row['mean_cosine']:.6f}")
+            print(f"  std cosine: {row['std_cosine']:.6f}")
+            print(f"  Dirichlet energy: {row['dirichlet_energy']:.6f}")
+            print(f"  mean pairwise Dirichlet: {row['mean_dirichlet_pairwise']:.6f}")
+            print(f"  std pairwise Dirichlet: {row['std_dirichlet_pairwise']:.6f}")
 
     print(f"\nAppended to: {csv_out}")
 
