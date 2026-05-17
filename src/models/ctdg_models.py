@@ -120,7 +120,7 @@ def encode_hetero(
 
 class GenericModel(torch.nn.Module):
     
-    def __init__(self, num_nodes, node_embedding_dim=[], memory=None, gnn=None, gnn_act=None, link_pred=None, include_features=True, edge_encoder=None, gnn_rev=None, atten_module=None, one_hot_dir=False):
+    def __init__(self, num_nodes, node_embedding_dim=[], memory=None, gnn=None, gnn_act=None, link_pred=None, include_features=True, edge_encoder=None, gnn_rev=None, atten_module=None, one_hot_dir=False, is_tgrab=False):
         super(GenericModel, self).__init__()
         self.memory = memory
         self.gnn = gnn
@@ -129,6 +129,7 @@ class GenericModel(torch.nn.Module):
         self.num_gnn_layers = 1
         self.num_nodes = num_nodes
         self.include_features = include_features
+        self.is_tgrab = is_tgrab
         if len(node_embedding_dim) > 0:
             if not include_features:
                 node_embedding_dim = [node_embedding_dim[0]]
@@ -156,9 +157,10 @@ class GenericModel(torch.nn.Module):
             return
         if x_all is None:
             return
+        if self.is_tgrab:
+            return
         if len(self.embeddings) == 0:
             return
-
         x_new = encode_features(self, x_all)
 
         mem = self.memory.memory
@@ -206,7 +208,9 @@ class GenericModel(torch.nn.Module):
 
         if hasattr(batch, 'x'):
             if self.include_features:
-                if len(self.embeddings) > 0:
+                if self.is_tgrab:
+                    x_new = batch.x[n_id].float()
+                elif len(self.embeddings) > 0:
                     x_new = encode_features(self, batch.x[n_id])
                 else:
                     x_new = batch.x[n_id]
@@ -308,7 +312,8 @@ class TGN(GenericModel):
                  graphsage: bool = False,
                  memory_enhancement: int = 0,
                  use_mlstm: bool = False,
-                 mlstm_num_heads: int = 4
+                 mlstm_num_heads: int = 4,
+                 is_tgrab: bool = False
     ):
         edge_encoder = torch.nn.Linear(edge_dim, edge_dim) if encode_edge or include_edge else None
 
@@ -347,10 +352,8 @@ class TGN(GenericModel):
         gnn_act = activation_resolver(gnn_act, **(gnn_act_kwargs or {}))
         gnn_layer_cls = EdgeSageEmbedding if use_graphsage else GraphAttentionEmbedding
         layer_out_multiplier = 1 if use_graphsage else 2
-        if len(node_embedding_dim) > 0:
-            h_prev = memory_dim +  node_embedding_dim[0][1]
-        else:
-            h_prev = memory_dim +  node_dim
+        feature_dim = node_embedding_dim[0][1] if len(node_embedding_dim) > 0 else node_dim
+        h_prev = memory_dim + feature_dim if include_features else memory_dim
 
         for h in gnn_hidden_dim:
             if hetero_gnn:
@@ -368,10 +371,7 @@ class TGN(GenericModel):
         if dir_GNN and not hetero_gnn:
             gnn_rev = torch.nn.Sequential()
             gnn_act = activation_resolver(gnn_act, **(gnn_act_kwargs or {}))
-            if len(node_embedding_dim) > 0:
-                h_prev = memory_dim +  node_embedding_dim[0][1]
-            else:
-                h_prev = memory_dim +  node_dim
+            h_prev = memory_dim + feature_dim if include_features else memory_dim
 
             for h in gnn_hidden_dim:
                 gnn_rev.append(gnn_layer_cls(h_prev, h, edge_dim, time_enc=memory.time_enc,
@@ -385,7 +385,7 @@ class TGN(GenericModel):
         # Define the link predictor
         link_pred = LinkPredictor(gnn_hidden_dim[-1] * layer_out_multiplier, readout_hidden, out_channels=1, include_edge=include_edge, edge_dim=edge_dim)
 
-        super().__init__(num_nodes, node_embedding_dim, memory, gnn, gnn_act, link_pred, include_features, edge_encoder, gnn_rev, atten_module, one_hot_dir)
+        super().__init__(num_nodes, node_embedding_dim, memory, gnn, gnn_act, link_pred, include_features, edge_encoder, gnn_rev, atten_module, one_hot_dir, is_tgrab=is_tgrab)
         self.num_gnn_layers = len(gnn_hidden_dim)
         self.include_edge = include_edge
         self.encode_edge = encode_edge

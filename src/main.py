@@ -3,7 +3,7 @@ from utils import (set_seed, SCORE_NAMES, dst_strategies, dst_strategies_help,
 from train_link import link_prediction, link_prediction_single
 from utils import set_seed, SCORE_NAMES, dst_strategies, dst_strategies_help, REGRESSION_SCORES, CLASSIFICATION_SCORES
 from negative_sampler import neg_sampler_names
-from datasets import get_dataset, DATA_NAMES, DARPADataset_Static
+from datasets import get_dataset, DATA_NAMES, DARPADataset_Static, is_darpa_dataset_name, is_tgrab_dataset_name
 from conf import MODEL_CONFS
 import pandas as pd
 import warnings
@@ -86,7 +86,9 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
         
-    if 'darpa' in args.data_name: args.return_predictions = True
+    is_tgrab = is_tgrab_dataset_name(args.data_name)
+    is_darpa = is_darpa_dataset_name(args.data_name)
+    if is_darpa or is_tgrab: args.return_predictions = True
         
     assert not (args.link_regression and args.use_all_dst_strategies_eval), 'Link regression does not require neg sampling strategies'
     assert args.link_regression == (args.metric in REGRESSION_SCORES), 'Link regression requires regression metrics'
@@ -151,11 +153,11 @@ if __name__ == "__main__":
         num_nodes, edge_dim = data.num_nodes, data.msg.max() + 1  
         node_dim = data.x.shape[-1] if hasattr(data, 'x') else 0
         init_time = 0
-        node_num_embeddings = data.x.max(dim=0).values+1 if 'darpa' in args.data_name else []
+        node_num_embeddings = data.x.max(dim=0).values+1 if is_darpa else []
     else:
         num_nodes, edge_dim = data.num_nodes, data.msg.shape[-1] 
         node_dim = data.x.shape[-1] if hasattr(data, 'x') else 0
-        node_num_embeddings = data.x.max(dim=0).values+1 if 'darpa' in args.data_name else []
+        node_num_embeddings = data.x.max(dim=0).values+1 if is_darpa else []
         
         init_time = data.t[0] if hasattr(data, 't') else 0
 
@@ -166,7 +168,7 @@ if __name__ == "__main__":
         if os.path.exists(stat_path):
             mean_delta_t, std_delta_t = pickle.load(open(stat_path, 'rb')) 
         else:
-            mean_delta_t, std_delta_t = compute_stats(data, args.split, init_time, ext_roll='darpa' in args.data_name)
+            mean_delta_t, std_delta_t = compute_stats(data, args.split, init_time, ext_roll=is_darpa or is_tgrab)
             pickle.dump((mean_delta_t, std_delta_t), open(stat_path, 'wb'))
     del data
     gc.collect()
@@ -186,6 +188,8 @@ if __name__ == "__main__":
             tgn_overrides['use_mlstm'] = True
         if args.mlstm_num_heads is not None:
             tgn_overrides['mlstm_num_heads'] = args.mlstm_num_heads
+        if is_tgrab:
+            tgn_overrides['is_tgrab'] = True
 
         conf_iter = get_conf(
             num_nodes,
