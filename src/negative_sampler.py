@@ -24,21 +24,30 @@ class NegativeSampler:
         self.name = name
         self.strategy = strategy
         self.check_link_existence = check_link_existence
+        self.dst_nodes_np = self.dst_nodes.numpy()
+        self._valid_neg_cache = {}
 
     def sample(self, src: torch.Tensor, dst_types: torch.Tensor, eval: bool = False, eval_seed: int = 9,  *args, **kwargs) -> torch.Tensor:
         rng = default_rng(eval_seed) if eval else self.rng
-        neg_dst = rng.choice(self.dst_nodes, size=src.shape[0])
+        src_np = src.detach().cpu().numpy()
+        neg_dst = np.empty(src_np.shape[0], dtype=np.int64)
 
-        # add the negative edge after checking 100 times if that edge correspond to an actual edge
-        if self.check_link_existence:
-            for i in range(src.shape[0]):
-                j = 0
-                # Try up to 100 times to sample a negative destination that does not exist
-                while self._exists(src[i].item(), neg_dst[i].item()) and j < 100:
-                    neg_dst[i] = rng.choice(self.dst_nodes, size=1)
-                    j += 1
-                if j >= 100:
-                    print(f'NegativeSampler: after 100 attemps failed to find an unseen neg_dst for node {src[i]}')
+        if not self.check_link_existence:
+            neg_dst = rng.choice(self.dst_nodes_np, size=src_np.shape[0])
+        else:
+            for src_id in np.unique(src_np):
+                mask = src_np == src_id
+                candidates = self._valid_neg_cache.get(src_id)
+                if candidates is None:
+                    seen = self.neighs[src_id]
+                    candidates = np.array(
+                        [dst for dst in self.dst_nodes_np if dst not in seen],
+                        dtype=np.int64,
+                    )
+                    if candidates.size == 0:
+                        candidates = self.dst_nodes_np
+                    self._valid_neg_cache[src_id] = candidates
+                neg_dst[mask] = rng.choice(candidates, size=mask.sum())
 
         return torch.tensor(neg_dst, dtype=torch.long, device=src.device)
 
@@ -74,22 +83,33 @@ class HeterogeneousNegativeSampler:
         self.name = name
         self.strategy = strategy
         self.check_link_existence = check_link_existence
+        self.dst_nodes_np = {k: v.numpy() for k, v in self.dst_nodes.items()}
+        self._valid_neg_cache = {}
 
     def sample(self, src: torch.Tensor, dst_types: torch.Tensor, eval: bool = False, eval_seed: int = 9,  *args, **kwargs) -> torch.Tensor:
         rng = default_rng(eval_seed) if eval else self.rng
-        neg_dst = np.zeros_like(src.cpu())
-        for i in range(src.shape[0]):
-            neg_dst[i] = rng.choice(self.dst_nodes[dst_types[i].item()], size=1)
-            
-            # Check if link already exists
-            if self.check_link_existence:
-                j = 0
-                while self._exists(src[i].item(), neg_dst[i].item()) and j < 100:
-                    neg_dst[i] = rng.choice(self.dst_nodes[dst_types[i].item()], size=1)
-                    j += 1
-                if j >= 100:
-                    print(f'HeterogeneousNegativeSampler: after 100 attempts failed to find an unseen neg_dst for node {src[i]}')
+        src_np = src.detach().cpu().numpy()
+        dst_types_np = dst_types.detach().cpu().numpy()
+        neg_dst = np.empty(src_np.shape[0], dtype=np.int64)
 
+        for src_id, dst_type in np.unique(np.stack([src_np, dst_types_np], axis=1), axis=0):
+            mask = (src_np == src_id) & (dst_types_np == dst_type)
+            dst_pool = self.dst_nodes_np[int(dst_type)]
+            if not self.check_link_existence:
+                candidates = dst_pool
+            else:
+                cache_key = (int(src_id), int(dst_type))
+                candidates = self._valid_neg_cache.get(cache_key)
+                if candidates is None:
+                    seen = self.neighs[int(src_id)]
+                    candidates = np.array(
+                        [dst for dst in dst_pool if dst not in seen],
+                        dtype=np.int64,
+                    )
+                    if candidates.size == 0:
+                        candidates = dst_pool
+                    self._valid_neg_cache[cache_key] = candidates
+            neg_dst[mask] = rng.choice(candidates, size=mask.sum())
 
         return torch.tensor(neg_dst, dtype=torch.long, device=src.device)
 
