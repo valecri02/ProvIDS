@@ -15,6 +15,8 @@ def get_TGN_conf(
     graphsage=False,
     use_mlstm=False,
     mlstm_num_heads=4,
+    glstm=False,
+    glstm_num_heads=4,
 ):
     # Hetero-TGN: 'hetero_gnn' = [True], 'hetero_transformer' = [False]
     # HGT-TGN: 'hetero_gnn' = [True], 'hetero_transformer' = [True]
@@ -24,7 +26,7 @@ def get_TGN_conf(
         'aggregator': ['last'],
         'embedding_dim': [100], #, 200, 64], #32, 64, 128], 
         'time_dim': [100], #32, 64, 128], 
-        'lr': [5e-4], #, 0.001],#, 0.0001],
+        'lr': [1e-4], #, 0.001],#, 0.0001],
         'wd': [0.0001], #0.00001],
         'gnn_act': ['relu'],
         'sampler_size': [10], #10, 5],
@@ -65,7 +67,7 @@ def get_TGN_conf(
                 'memory': params['memory'],
                 'memory_dim': params['embedding_dim'],
                 'time_dim': params['time_dim'],
-                'gnn_hidden_dim': [params['embedding_dim'] if graphsage else params['embedding_dim'] // 2]*params['num_layers'],
+                'gnn_hidden_dim': [params['embedding_dim'] if (graphsage or glstm) else params['embedding_dim'] // 2]*params['num_layers'],
                 'gnn_act': params['gnn_act'],
                 'readout_hidden': max(1, params['embedding_dim']),
                 'mean_delta_t': mean_delta_t,
@@ -82,6 +84,8 @@ def get_TGN_conf(
                 'graphsage': graphsage,
                 'use_mlstm': use_mlstm,
                 'mlstm_num_heads': mlstm_num_heads,
+                'glstm': glstm,
+                'glstm_num_heads': glstm_num_heads,
             },
             'optim_params':{
                 'lr': params['lr'], 
@@ -155,7 +159,7 @@ def get_GNN_conf(num_nodes, num_relations, node_dim, node_num_embeddings, init_t
             }
 
 
-_tgn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=None, num_layers=None, graphsage=False, use_mlstm=False, mlstm_num_heads=4: get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=memory, num_layers=num_layers, graphsage=graphsage, use_mlstm=use_mlstm, mlstm_num_heads=mlstm_num_heads)
+_tgn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=None, num_layers=None, graphsage=False, use_mlstm=False, mlstm_num_heads=4, glstm=False, glstm_num_heads=4: get_TGN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t, memory=memory, num_layers=num_layers, graphsage=graphsage, use_mlstm=use_mlstm, mlstm_num_heads=mlstm_num_heads, glstm=glstm, glstm_num_heads=glstm_num_heads)
 _basic_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t: get_Basic_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)
 _gnn_fun = lambda num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t: get_GNN_conf(num_nodes, edge_dim, node_dim, node_num_embeddings, init_time, mean_delta_t, std_delta_t)
 

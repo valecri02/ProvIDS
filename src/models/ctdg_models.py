@@ -308,7 +308,9 @@ class TGN(GenericModel):
                  graphsage: bool = False,
                  memory_enhancement: int = 0,
                  use_mlstm: bool = False,
-                 mlstm_num_heads: int = 4
+                 mlstm_num_heads: int = 4,
+                 glstm: bool = False,
+                 glstm_num_heads: int = 4
     ):
         edge_encoder = torch.nn.Linear(edge_dim, edge_dim) if encode_edge or include_edge else None
 
@@ -321,8 +323,13 @@ class TGN(GenericModel):
         self.memory_enhancement = int(memory_enhancement)
 
         use_graphsage = bool(graphsage)
+        use_glstm = bool(glstm)
         if use_graphsage and hetero_gnn:
             raise ValueError('GraphSAGE is only supported for homogeneous GNNs in this implementation.')
+        if use_glstm and hetero_gnn:
+            raise ValueError('GraphGLSTMEmbedding is only supported for homogeneous GNNs in this implementation.')
+        if use_glstm and use_graphsage:
+            raise ValueError('GraphGLSTMEmbedding and GraphSAGE are mutually exclusive.')
         
         # Define memory
         if memory:
@@ -345,38 +352,51 @@ class TGN(GenericModel):
         # Define GNN    
         gnn = torch.nn.Sequential()
         gnn_act = activation_resolver(gnn_act, **(gnn_act_kwargs or {}))
-        gnn_layer_cls = EdgeSageEmbedding if use_graphsage else GraphAttentionEmbedding
-        layer_out_multiplier = 1 if use_graphsage else 2
-        if len(node_embedding_dim) > 0:
-            h_prev = memory_dim +  node_embedding_dim[0][1]
+        if use_glstm:
+            gnn_act = torch.nn.Identity()
+            gnn_layer_cls = GraphGLSTMEmbedding
+            layer_out_multiplier = 1
+        elif use_graphsage:
+            gnn_layer_cls = EdgeSageEmbedding
+            layer_out_multiplier = 1
         else:
-            h_prev = memory_dim +  node_dim
+            gnn_layer_cls = GraphAttentionEmbedding
+            layer_out_multiplier = 2
+        feature_dim = node_embedding_dim[0][1] if len(node_embedding_dim) > 0 else node_dim
+        h_prev = memory_dim + feature_dim
 
-        for h in gnn_hidden_dim:
-            if hetero_gnn:
-                gnn.append(HeteroGraphAttentionEmbedding(h_prev, h, edge_dim, time_enc=memory.time_enc, 
-                                                mean_delta_t=mean_delta_t, std_delta_t=std_delta_t, metadata=data_metadata, hetero_transformer=hetero_transformer))
-                
-                """gnn.append(to_hetero(GraphAttentionEmbedding(h_prev, h, edge_dim, time_enc=memory.time_enc, 
-                                                mean_delta_t=mean_delta_t, std_delta_t=std_delta_t), data_metadata))"""
-                
-            else:
-                gnn.append(gnn_layer_cls(h_prev, h, edge_dim, time_enc=memory.time_enc, 
-                                                mean_delta_t=mean_delta_t, std_delta_t=std_delta_t))
-            h_prev = h * layer_out_multiplier # We double the input dimension because GraphAttentionEmbedding has 2 concatenated heads
+        if use_glstm:
+            gnn.append(gnn_layer_cls(h_prev, gnn_hidden_dim, edge_dim, time_enc=memory.time_enc,
+                                     mean_delta_t=mean_delta_t, std_delta_t=std_delta_t,
+                                     heads=glstm_num_heads))
+            h_prev = gnn_hidden_dim[-1] * layer_out_multiplier
+        else:
+            for h in gnn_hidden_dim:
+                if hetero_gnn:
+                    gnn.append(HeteroGraphAttentionEmbedding(h_prev, h, edge_dim, time_enc=memory.time_enc,
+                                                    mean_delta_t=mean_delta_t, std_delta_t=std_delta_t, metadata=data_metadata, hetero_transformer=hetero_transformer))
+
+                    """gnn.append(to_hetero(GraphAttentionEmbedding(h_prev, h, edge_dim, time_enc=memory.time_enc,
+                                                    mean_delta_t=mean_delta_t, std_delta_t=std_delta_t), data_metadata))"""
+
+                else:
+                    gnn.append(gnn_layer_cls(h_prev, h, edge_dim, time_enc=memory.time_enc,
+                                                    mean_delta_t=mean_delta_t, std_delta_t=std_delta_t))
+                h_prev = h * layer_out_multiplier # We double the input dimension because GraphAttentionEmbedding has 2 concatenated heads
 
         if dir_GNN and not hetero_gnn:
             gnn_rev = torch.nn.Sequential()
-            gnn_act = activation_resolver(gnn_act, **(gnn_act_kwargs or {}))
-            if len(node_embedding_dim) > 0:
-                h_prev = memory_dim +  node_embedding_dim[0][1]
-            else:
-                h_prev = memory_dim +  node_dim
+            h_prev = memory_dim + feature_dim
 
-            for h in gnn_hidden_dim:
-                gnn_rev.append(gnn_layer_cls(h_prev, h, edge_dim, time_enc=memory.time_enc,
-                                             mean_delta_t=mean_delta_t, std_delta_t=std_delta_t))
-                h_prev = h * layer_out_multiplier
+            if use_glstm:
+                gnn_rev.append(gnn_layer_cls(h_prev, gnn_hidden_dim, edge_dim, time_enc=memory.time_enc,
+                                             mean_delta_t=mean_delta_t, std_delta_t=std_delta_t,
+                                             heads=glstm_num_heads))
+            else:
+                for h in gnn_hidden_dim:
+                    gnn_rev.append(gnn_layer_cls(h_prev, h, edge_dim, time_enc=memory.time_enc,
+                                                 mean_delta_t=mean_delta_t, std_delta_t=std_delta_t))
+                    h_prev = h * layer_out_multiplier
             atten_module = torch.nn.Linear(gnn_hidden_dim[-1] * layer_out_multiplier * 2, 1)
         else:
             gnn_rev = None
@@ -390,4 +410,3 @@ class TGN(GenericModel):
         self.include_edge = include_edge
         self.encode_edge = encode_edge
         self.hetero_gnn = hetero_gnn
-        
