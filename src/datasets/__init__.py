@@ -4,40 +4,12 @@ from torch_geometric.datasets import JODIEDataset
 from numpy.random import default_rng
 import numpy
 from .darpa import DARPADataset_Temporal, DARPADataset_Static
-from .tgrab import TGRABDataset_Temporal
 
 
 JODIE = ['Wikipedia', "Reddit", "MOOC", "LastFM"]
-
-DARPA_PREFIXES = (
-    "darpa_trace_",
-    "darpa_theia_",
-)
-TGRAB_PREFIXES = (
-    "darpa_tgrab_cause_effect",
-    "darpa_tgrab_long_range",
-    "darpa_tgrab_periodicity",
-)
-
-
-def is_darpa_dataset_name(name):
-    return name.startswith(DARPA_PREFIXES)
-
-
-def is_tgrab_dataset_name(name):
-    return name.startswith(TGRAB_PREFIXES)
-
-
-class DataNames(list):
-    def __contains__(self, name):
-        return (
-            super().__contains__(name)
-            or is_darpa_dataset_name(name)
-            or is_tgrab_dataset_name(name)
-        )
-
-
-DATA_NAMES = DataNames(JODIE + list(DARPA_PREFIXES) + list(TGRAB_PREFIXES))
+REC_SYS = [] # TODO
+DARPA = ["darpa_trace_0to125", "darpa_trace_126to210", "darpa_trace_116to125", "darpa_trace_0to210", "darpa_theia_0to25", "darpa_theia_20", "darpa_theia_10", "darpa_theia_05", "darpa_theia_01", "darpa_theia_reduced_005"]
+DATA_NAMES = JODIE + REC_SYS + DARPA
 
     
 def get_dataset(root, name, version, seed, metadata=False):
@@ -47,13 +19,7 @@ def get_dataset(root, name, version, seed, metadata=False):
         dataset = JODIEDataset(root, name.lower())
         data = dataset[0]
         data.x = torch.tensor(rng.random((data.num_nodes,1), dtype=numpy.float32))
-    elif is_tgrab_dataset_name(name):
-        if version == 'temporal':
-            dataset = TGRABDataset_Temporal(root, name)
-            data = dataset[0]
-        else:
-            raise NotImplementedError
-    elif is_darpa_dataset_name(name):
+    elif name in DARPA:
         if version == 'temporal':
             dataset = DARPADataset_Temporal(root, name)
             data = dataset[0]
