@@ -310,7 +310,8 @@ class TGN(GenericModel):
                  use_mlstm: bool = False,
                  mlstm_num_heads: int = 4,
                  glstm: bool = False,
-                 glstm_num_heads: int = 4
+                 glstm_num_heads: int = 4,
+                 glstm_edge_projection: bool = False
     ):
         edge_encoder = torch.nn.Linear(edge_dim, edge_dim) if encode_edge or include_edge else None
 
@@ -324,6 +325,7 @@ class TGN(GenericModel):
 
         use_graphsage = bool(graphsage)
         use_glstm = bool(glstm)
+        use_glstm_edge_projection = bool(glstm_edge_projection)
         if use_graphsage and hetero_gnn:
             raise ValueError('GraphSAGE is only supported for homogeneous GNNs in this implementation.')
         if use_glstm and hetero_gnn:
@@ -368,7 +370,8 @@ class TGN(GenericModel):
         if use_glstm:
             gnn.append(gnn_layer_cls(h_prev, gnn_hidden_dim, edge_dim, time_enc=memory.time_enc,
                                      mean_delta_t=mean_delta_t, std_delta_t=std_delta_t,
-                                     heads=glstm_num_heads))
+                                     heads=glstm_num_heads,
+                                     edge_projection=use_glstm_edge_projection))
             h_prev = gnn_hidden_dim[-1] * layer_out_multiplier
         else:
             for h in gnn_hidden_dim:
@@ -391,7 +394,8 @@ class TGN(GenericModel):
             if use_glstm:
                 gnn_rev.append(gnn_layer_cls(h_prev, gnn_hidden_dim, edge_dim, time_enc=memory.time_enc,
                                              mean_delta_t=mean_delta_t, std_delta_t=std_delta_t,
-                                             heads=glstm_num_heads))
+                                             heads=glstm_num_heads,
+                                             edge_projection=use_glstm_edge_projection))
             else:
                 for h in gnn_hidden_dim:
                     gnn_rev.append(gnn_layer_cls(h_prev, h, edge_dim, time_enc=memory.time_enc,

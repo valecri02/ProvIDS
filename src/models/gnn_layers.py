@@ -59,6 +59,7 @@ class _GraphGLSTMStep(nn.Module):
         mean_delta_t: float = 0.,
         std_delta_t: float = 1.,
         heads: int = 4,
+        edge_projection: bool = False,
     ):
         super().__init__()
         if out_channels % heads != 0:
@@ -70,10 +71,15 @@ class _GraphGLSTMStep(nn.Module):
         self.out_dim = out_channels
         self.heads = heads
         self.head_dim = out_channels // heads
+        self.edge_projection = edge_projection
+        edge_dim = msg_dim + (time_enc.out_channels if time_enc is not None else 0)
 
         self.inp_norm = nn.LayerNorm(in_channels)
         self.hid_norm = nn.GroupNorm(heads, out_channels)
-        self.down_proj = nn.Linear(out_channels, out_channels)
+        self.down_proj = nn.Sequential(
+            nn.Linear(out_channels, out_channels),
+            nn.ReLU(),
+        )
         self.res_proj = (
             nn.Identity()
             if in_channels == out_channels
@@ -86,9 +92,17 @@ class _GraphGLSTMStep(nn.Module):
         self.W_q = nn.Linear(in_channels * 2, out_channels)
         self.W_k = nn.Linear(in_channels, out_channels)
         self.W_v = nn.Linear(in_channels, out_channels)
+        self.W_v_edge = nn.Linear(edge_dim, out_channels, bias=False)
+        self.W_out_edge = (
+            nn.Linear(edge_dim, out_channels, bias=False)
+            if edge_projection
+            else None
+        )
 
-    def forward(self, x, edge_index, c_prev, n_prev, m_prev):
+    def forward(self, x, edge_index, edge_attr, c_prev, n_prev, m_prev):
         message_edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
+        self_loop_attr = edge_attr.new_zeros(x.size(0), edge_attr.size(-1))
+        message_edge_attr = torch.cat([edge_attr, self_loop_attr], dim=0)
 
         x_n = self.inp_norm(x)
         k_t = self.W_k(x_n).view(-1, self.heads, self.head_dim)
@@ -100,20 +114,24 @@ class _GraphGLSTMStep(nn.Module):
         o_t = torch.sigmoid(self.W_o(x_n))
 
         row, col = message_edge_index
+        edge_i_tilde = i_tilde[row]
         max_i = torch.full_like(i_tilde, -torch.inf)
         max_i = torch.scatter_reduce(
             max_i,
             0,
             col.unsqueeze(-1).expand(-1, i_tilde.size(1)),
-            i_tilde[row],
+            edge_i_tilde,
             reduce="amax",
             include_self=True,
         )
         m_t = torch.maximum(f_tilde + m_prev, max_i)
 
-        vk_t = v_t.unsqueeze(-1) * k_t.unsqueeze(-2)
-        edge_i = torch.exp(i_tilde[row] - m_t[col])
-        edge_ivk = _enlarge_as(edge_i, vk_t[row]) * vk_t[row]
+        edge_v = v_t[row] + self.W_v_edge(message_edge_attr).view(
+            -1, self.heads, self.head_dim
+        )
+        edge_vk = edge_v.unsqueeze(-1) * k_t[row].unsqueeze(-2)
+        edge_i = torch.exp(edge_i_tilde - m_t[col])
+        edge_ivk = _enlarge_as(edge_i, edge_vk) * edge_vk
         edge_ik = _enlarge_as(edge_i, k_t[row]) * k_t[row]
 
         aggregated_ivk = torch.zeros_like(c_prev)
@@ -140,6 +158,13 @@ class _GraphGLSTMStep(nn.Module):
         h_t = o_t * h_t
 
         out = self.hid_norm(h_t)
+        if self.edge_projection:
+            edge_context = x_n.new_zeros(x_n.size(0), edge_attr.size(-1))
+            edge_count = x_n.new_zeros(x_n.size(0), 1)
+            edge_context.index_add_(0, col, edge_attr)
+            edge_count.index_add_(0, col, torch.ones(edge_attr.size(0), 1, device=x.device, dtype=x.dtype))
+            edge_context = edge_context / edge_count.clamp_min(1.)
+            out = out + self.W_out_edge(edge_context)
         out = self.down_proj(out)
         x_t = out + self.res_proj(x)
         return x_t, c_t, n_t, m_t
@@ -157,6 +182,7 @@ class GraphGLSTMEmbedding(nn.Module):
         mean_delta_t: float = 0.,
         std_delta_t: float = 1.,
         heads: int = 4,
+        edge_projection: bool = False,
     ):
         super().__init__()
         if isinstance(out_channels, int):
@@ -171,6 +197,9 @@ class GraphGLSTMEmbedding(nn.Module):
         self.out_dim = hidden_channels[-1]
         self.heads = heads
         self.head_dim = self.out_dim // heads
+        self.mean_delta_t = mean_delta_t
+        self.std_delta_t = std_delta_t
+        self.time_enc = time_enc
         dims_in = [in_channels] + hidden_channels[:-1]
         self.layers = nn.ModuleList([
             _GraphGLSTMStep(
@@ -181,16 +210,25 @@ class GraphGLSTMEmbedding(nn.Module):
                 mean_delta_t=mean_delta_t,
                 std_delta_t=std_delta_t,
                 heads=heads,
+                edge_projection=edge_projection,
             )
             for dim_in, dim_out in zip(dims_in, hidden_channels)
         ])
 
     def forward(self, x, last_update, edge_index, t, msg):
+        rel_t = t - last_update[edge_index[0]]
+        rel_t = (rel_t - self.mean_delta_t) / self.std_delta_t
+        if self.time_enc is None:
+            edge_attr = msg
+        else:
+            rel_t_enc = self.time_enc(rel_t.to(x.dtype))
+            edge_attr = torch.cat([rel_t_enc, msg], dim=-1)
+
         c = x.new_zeros(x.size(0), self.heads, self.head_dim, self.head_dim)
         n = x.new_ones(x.size(0), self.heads, self.head_dim)
         m = x.new_zeros(x.size(0), self.heads)
         for layer in self.layers:
-            x, c, n, m = layer(x, edge_index, c, n, m)
+            x, c, n, m = layer(x, edge_index, edge_attr, c, n, m)
         return x
 
 

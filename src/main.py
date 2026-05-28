@@ -79,6 +79,7 @@ if __name__ == "__main__":
     parser.add_argument('--graphsage', help='Use GraphSAGE instead of GAT in TGN.', action='store_true',)
     parser.add_argument('--glstm', help='Use homogeneous gLSTM-style message passing in TGN.', action='store_true')
     parser.add_argument('--glstm_num_heads', help='Number of heads to use for gLSTM-style GNN message passing.', default=4, type=int)
+    parser.add_argument('--glstm_edge_projection', help='Condition the gLSTM output projection on incoming edge/time features.', action='store_true')
     parser.add_argument('--use_mlstm', help='Use mLSTM instead of GRU for TGN memory updates.', action='store_true')
     parser.add_argument('--mlstm_num_heads', help='Number of heads to use for mLSTM memory updates.', default=4, type=int)
 
@@ -187,6 +188,7 @@ if __name__ == "__main__":
         if args.glstm:
             tgn_overrides['glstm'] = True
             tgn_overrides['glstm_num_heads'] = args.glstm_num_heads
+            tgn_overrides['glstm_edge_projection'] = args.glstm_edge_projection
         if args.use_mlstm:
             tgn_overrides['use_mlstm'] = True
         if args.mlstm_num_heads is not None:
